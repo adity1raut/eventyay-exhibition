@@ -1,5 +1,6 @@
 import io
 import json
+from urllib.parse import quote
 
 from defusedcsv import csv
 from django.conf import settings as django_settings
@@ -117,6 +118,15 @@ def event_kwargs(event):
 
 def call_access_session_key(event):
     return f"exhibition_call_access_{event.pk}"
+
+
+def call_auth_urls(event):
+    """Log in / registration URLs that send the visitor on to the exhibition request form."""
+    next_url = reverse("plugins:exhibition:proposal.add", kwargs=event_kwargs(event))
+    return {
+        "call_login_url": f"{reverse('auth.login')}?next={quote(next_url)}",
+        "call_register_url": f"{reverse('account_signup')}?next={quote(next_url)}",
+    }
 
 
 def partner_list_url(event, partner_type):
@@ -772,6 +782,8 @@ class PublicCallView(PublicCallEnabledMixin, TemplateView):
                 event=self.request.event,
                 user=self.request.user,
             )
+        else:
+            context.update(call_auth_urls(self.request.event))
         return context
 
 
