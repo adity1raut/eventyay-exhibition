@@ -1898,6 +1898,12 @@ class ExhibitionQuestionDeleteView(EventPermissionRequiredMixin, DeleteView):
     def get_queryset(self):
         return ExhibitionQuestion.objects.filter(event=self.request.event)
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        # Deleting the field drops the condition with it, so these stop being conditional.
+        context["dependent_questions"] = list(self.object.dependent_questions.all())
+        return context
+
     def form_valid(self, form):
         self.object.log_action(
             LOG_QUESTION_DELETED,

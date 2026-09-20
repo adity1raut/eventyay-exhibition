@@ -77,6 +77,13 @@ def get_tz_help(event):
     return _("Times are in the event timezone: %(tz)s.") % {"tz": event.timezone}
 
 
+def delete_exhibition_answer(answer):
+    """Delete an answer and the file it holds; Django leaves the file behind on its own."""
+    if answer.file:
+        answer.file.delete(save=False)
+    answer.delete()
+
+
 class ExhibitionQuestionDependencyMixin:
     """Conditional visibility for custom fields that depend on another field's answer.
 
@@ -128,21 +135,44 @@ class ExhibitionQuestionDependencyMixin:
             return any(str(getattr(item, "pk", item)) in dependency_values for item in parent_value)
         return str(parent_value) in dependency_values
 
+    def dependency_is_resolvable(self, question, seen=None):
+        """True when every field up the dependency chain is on this form to answer."""
+        if not question.dependency_question_id:
+            return True
+        seen = seen or set()
+        if question.pk in seen:
+            return False
+        seen.add(question.pk)
+        parent_field = self.fields.get(f"question_{question.dependency_question_id}")
+        parent = getattr(parent_field, "question", None)
+        if parent is None:
+            return False
+        return self.dependency_is_resolvable(parent, seen)
+
     @property
     def hidden_question_fields(self):
         return getattr(self, "_hidden_question_fields", set())
+
+    @property
+    def stale_question_fields(self):
+        """Hidden fields whose condition the visitor could act on, so their answers no longer apply."""
+        return getattr(self, "_stale_question_fields", set())
 
     def clean(self):
         """Drop whatever a hidden field contributed: its value and any error it raised."""
         cleaned_data = super().clean()
         hidden = set()
+        stale = set()
         for name, field in self.question_fields():
             if self.question_is_visible(field.question, cleaned_data):
                 continue
             hidden.add(name)
+            if self.dependency_is_resolvable(field.question):
+                stale.add(name)
             self.errors.pop(name, None)
             cleaned_data[name] = None
         self._hidden_question_fields = hidden
+        self._stale_question_fields = stale
         return cleaned_data
 
 
@@ -247,10 +277,12 @@ class ExhibitionQuestionFieldsMixin(ExhibitionQuestionDependencyMixin):
             if not key.startswith("question_"):
                 continue
             if key in self.hidden_question_fields:
-                # The field was not shown, so drop any answer left over from an earlier edit.
+                # The field was not shown. Drop an answer the visitor themselves hid by
+                # changing the parent, but keep one whose parent has since been
+                # deactivated or deleted: they never got the chance to retract it.
                 answer = self.fields[key].answer
-                if answer:
-                    answer.delete()
+                if answer and key in self.stale_question_fields:
+                    delete_exhibition_answer(answer)
                 continue
             field = self.fields[key]
             question = field.question
@@ -261,7 +293,7 @@ class ExhibitionQuestionFieldsMixin(ExhibitionQuestionDependencyMixin):
 
             if empty:
                 if answer:
-                    answer.delete()
+                    delete_exhibition_answer(answer)
                 continue
 
             if not answer:
@@ -1101,10 +1133,12 @@ class ExhibitionQuestionFieldsMixin(ExhibitionQuestionDependencyMixin):
             if not key.startswith("question_"):
                 continue
             if key in self.hidden_question_fields:
-                # The field was not shown, so drop any answer left over from an earlier edit.
+                # The field was not shown. Drop an answer the visitor themselves hid by
+                # changing the parent, but keep one whose parent has since been
+                # deactivated or deleted: they never got the chance to retract it.
                 answer = self.fields[key].answer
-                if answer:
-                    answer.delete()
+                if answer and key in self.stale_question_fields:
+                    delete_exhibition_answer(answer)
                 continue
             field = self.fields[key]
             question = field.question
@@ -1119,7 +1153,7 @@ class ExhibitionQuestionFieldsMixin(ExhibitionQuestionDependencyMixin):
 
             if empty:
                 if answer:
-                    answer.delete()
+                    delete_exhibition_answer(answer)
                 continue
 
             if not answer:

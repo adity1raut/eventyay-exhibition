@@ -405,3 +405,209 @@ def test_an_answer_is_dropped_when_its_field_becomes_hidden(call_event):
     form.save_exhibition_questions(proposal)
 
     assert not ExhibitionAnswer.objects.filter(proposal=proposal, question=child).exists()
+
+
+# --- review follow-ups: cleanup when the configuration itself changes --------------------
+
+
+@pytest.mark.django_db
+def test_deleting_an_option_drops_it_from_dependents(call_event):
+    parent, options = make_choice_question(call_event, answers=("Yes", "No", "Maybe"))
+    child = make_question(call_event, label="Which furniture?")
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk), str(options[1].pk)]
+    child.save()
+
+    options[0].delete()
+
+    child.refresh_from_db()
+    assert child.dependency_question == parent
+    assert child.dependency_values == [str(options[1].pk)]
+
+
+@pytest.mark.django_db
+def test_deleting_the_last_option_makes_a_dependent_unconditional(call_event):
+    parent, options = make_choice_question(call_event, answers=("Yes",))
+    child = make_question(call_event, label="Which furniture?")
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk)]
+    child.save()
+
+    options[0].delete()
+
+    child.refresh_from_db()
+    assert child.dependency_question is None
+    assert child.dependency_values == []
+
+
+@pytest.mark.django_db
+def test_deleting_the_parent_leaves_no_stale_configuration(call_event):
+    parent, options = make_choice_question(call_event)
+    child = make_question(call_event, label="Which furniture?")
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk)]
+    child.save()
+
+    parent.delete()
+
+    child.refresh_from_db()
+    assert child.dependency_question is None
+    assert child.dependency_values == []
+
+
+@pytest.mark.django_db
+def test_a_dependent_can_still_be_saved_after_its_option_went_away(call_event):
+    parent, options = make_choice_question(call_event, answers=("Yes", "No"))
+    child = make_question(call_event, label="Which furniture?")
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk)]
+    child.save()
+    options[0].delete()
+    child.refresh_from_db()
+
+    form = ExhibitionQuestionForm(
+        event=call_event,
+        instance=child,
+        data=question_form_data(question_0="Which furniture?", dependency_question="", dependency_values=[]),
+    )
+
+    assert form.is_valid(), form.errors
+
+
+# --- review follow-ups: answers are only discarded when the visitor could act ------------
+
+
+@pytest.mark.django_db
+def test_an_answer_survives_a_deactivated_parent(call_event):
+    parent, options = make_choice_question(call_event)
+    child = make_question(call_event, label="Which furniture?")
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk)]
+    child.save()
+    proposal = make_proposal(call_event, email="kept@example.org")
+    ExhibitionAnswer.objects.create(proposal=proposal, question=child, answer="Two chairs")
+    parent.active = False
+    parent.save()
+
+    form = ExhibitionProposalForm(
+        event=call_event,
+        instance=proposal,
+        data={"name": "Acme", "content_locale": "en"},
+    )
+    assert form.is_valid(), form.errors
+    form.save_exhibition_questions(proposal)
+
+    answer = ExhibitionAnswer.objects.get(proposal=proposal, question=child)
+    assert answer.answer == "Two chairs"
+
+
+@pytest.mark.django_db
+def test_an_answer_survives_a_deleted_parent(call_event):
+    parent, options = make_choice_question(call_event)
+    child = make_question(call_event, label="Which furniture?")
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk)]
+    child.save()
+    proposal = make_proposal(call_event, email="kept-deleted@example.org")
+    ExhibitionAnswer.objects.create(proposal=proposal, question=child, answer="Two chairs")
+    parent.delete()
+
+    form = ExhibitionProposalForm(
+        event=call_event,
+        instance=proposal,
+        data={"name": "Acme", "content_locale": "en", f"question_{child.pk}": "Two chairs"},
+    )
+    assert form.is_valid(), form.errors
+    form.save_exhibition_questions(proposal)
+
+    assert ExhibitionAnswer.objects.filter(proposal=proposal, question=child).exists()
+
+
+@pytest.mark.django_db
+def test_deleting_an_answer_removes_its_file(call_event):
+    from django.core.files.base import ContentFile
+    from django.core.files.storage import default_storage
+
+    parent, options = make_choice_question(call_event)
+    child = make_question(call_event, label="Upload a floor plan", variant=ExhibitionQuestionVariant.FILE)
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk)]
+    child.save()
+    proposal = make_proposal(call_event, email="file@example.org")
+    answer = ExhibitionAnswer.objects.create(proposal=proposal, question=child)
+    answer.file.save("floor-plan.txt", ContentFile(b"plan"), save=True)
+    stored_name = answer.file.name
+    assert default_storage.exists(stored_name)
+
+    form = ExhibitionProposalForm(
+        event=call_event,
+        instance=proposal,
+        data={"name": "Acme", "content_locale": "en", f"question_{parent.pk}": str(options[1].pk)},
+    )
+    assert form.is_valid(), form.errors
+    form.save_exhibition_questions(proposal)
+
+    assert not ExhibitionAnswer.objects.filter(proposal=proposal, question=child).exists()
+    assert not default_storage.exists(stored_name)
+
+
+# --- review follow-up: the organiser-side form goes through the same mixin ---------------
+
+
+@pytest.mark.django_db
+def test_organiser_form_drops_a_hidden_answer(call_event):
+    from exhibition.forms import ExhibitorInfoForm
+    from exhibition.models import ExhibitorInfo
+
+    parent, options = make_choice_question(call_event)
+    child = make_question(call_event, label="Which furniture?", required=True)
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk)]
+    child.save()
+    exhibitor = ExhibitorInfo.objects.create(event=call_event, name={"en": "Acme"}, is_exhibitor=True)
+    proposal = make_proposal(call_event, email="organiser-side@example.org")
+    proposal.approved_exhibitor = exhibitor
+    proposal.save()
+    ExhibitionAnswer.objects.create(proposal=proposal, question=child, answer="Two chairs")
+
+    form = ExhibitorInfoForm(
+        data={"name_0": "Acme", f"question_{parent.pk}": str(options[1].pk)},
+        event=call_event,
+        instance=exhibitor,
+        partner_type="exhibitor",
+    )
+
+    assert form.is_valid(), form.errors
+    assert f"question_{child.pk}" in form.hidden_question_fields
+    form.save_exhibition_questions(proposal)
+    assert not ExhibitionAnswer.objects.filter(proposal=proposal, question=child).exists()
+
+
+@pytest.mark.django_db
+def test_organiser_form_keeps_an_answer_whose_parent_was_deactivated(call_event):
+    from exhibition.forms import ExhibitorInfoForm
+    from exhibition.models import ExhibitorInfo
+
+    parent, options = make_choice_question(call_event)
+    child = make_question(call_event, label="Which furniture?", required=True)
+    child.dependency_question = parent
+    child.dependency_values = [str(options[0].pk)]
+    child.save()
+    exhibitor = ExhibitorInfo.objects.create(event=call_event, name={"en": "Acme"}, is_exhibitor=True)
+    proposal = make_proposal(call_event, email="organiser-kept@example.org")
+    proposal.approved_exhibitor = exhibitor
+    proposal.save()
+    ExhibitionAnswer.objects.create(proposal=proposal, question=child, answer="Two chairs")
+    parent.active = False
+    parent.save()
+
+    form = ExhibitorInfoForm(
+        data={"name_0": "Acme"},
+        event=call_event,
+        instance=exhibitor,
+        partner_type="exhibitor",
+    )
+
+    assert form.is_valid(), form.errors
+    form.save_exhibition_questions(proposal)
+    assert ExhibitionAnswer.objects.filter(proposal=proposal, question=child).exists()

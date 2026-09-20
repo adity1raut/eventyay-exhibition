@@ -1000,6 +1000,28 @@ class ExhibitionQuestionOption(models.Model):
         return localize_event_text(self.answer) or str(self.answer)
 
 
+def prune_dependency_option(option):
+    """Drop a deleted answer option from the fields that keyed a dependency on it.
+
+    A field left with no values to match on stops being conditional rather than
+    becoming permanently invisible.
+    """
+    value = str(option.pk)
+    for dependent in ExhibitionQuestion.objects.filter(dependency_question_id=option.question_id):
+        remaining = [item for item in dependent.dependency_values if item != value]
+        if remaining == list(dependent.dependency_values):
+            continue
+        dependent.dependency_values = remaining
+        if not remaining:
+            dependent.dependency_question = None
+        dependent.save(update_fields=["dependency_values", "dependency_question"])
+
+
+def clear_dependencies_on(question):
+    """Reset the fields that depend on a field that is about to be deleted."""
+    question.dependent_questions.update(dependency_question=None, dependency_values=[])
+
+
 class ExhibitionAnswer(models.Model):
     question = models.ForeignKey(
         ExhibitionQuestion,
