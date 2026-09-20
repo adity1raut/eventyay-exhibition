@@ -64,6 +64,7 @@ from .models import (
     LOG_PARTNER_ADDED,
     LOG_PARTNER_CHANGED,
     LOG_PARTNER_DELETED,
+    LOG_PRODUCT_CHANGED,
     LOG_PROPOSAL_CHANGED,
     LOG_QUESTION_ADDED,
     LOG_QUESTION_CHANGED,
@@ -75,6 +76,8 @@ from .models import (
     QUESTION_OPTION_VARIANTS,
     ExhibitionCustomEmailTemplate,
     ExhibitionEmailQueue,
+    ExhibitionProduct,
+    ExhibitionProductPurpose,
     ExhibitionProposal,
     ExhibitionProposalState,
     ExhibitionQuestion,
@@ -97,6 +100,8 @@ from .utils import (
     build_voucher_csv,
     claim_pool_vouchers,
     event_exhibitor_settings,
+    exhibition_products_for_event,
+    mixed_booth_quotas,
     pool_remaining,
     provision_exhibitor_devices,
     public_exhibitor_sessions,
@@ -1608,6 +1613,87 @@ class ProposalActionView(EventPermissionRequiredMixin, View):
         else:
             messages.error(request, message)
         return redirect("plugins:exhibition:proposal.list", **event_kwargs(request.event))
+
+
+class ExhibitionProductListView(EventPermissionRequiredMixin, TemplateView):
+    """Give the event's Tickets products an exhibition role.
+
+    Price, category, quota and order form stay in Tickets; this page only says which
+    products are sold as exhibition or sponsorship packages and which of them come with
+    a booth.
+    """
+
+    permission = "can_change_items"
+    template_name = "exhibitors/products.html"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        rows = []
+        for product in exhibition_products_for_event(self.request.event):
+            role = getattr(product, "exhibition_product", None)
+            rows.append(
+                {
+                    "product": product,
+                    "purpose": role.purpose if role else "",
+                    "includes_booth": role.includes_booth if role else True,
+                    "quotas": list(product.quotas.all()),
+                }
+            )
+        context["product_rows"] = rows
+        context["purpose_choices"] = ExhibitionProductPurpose.choices
+        context["mixed_booth_quotas"] = mixed_booth_quotas(self.request.event)
+        context["tickets_products_url"] = reverse(
+            "control:event.products",
+            kwargs=event_kwargs(self.request.event),
+        )
+        return context
+
+    def post(self, request, *args, **kwargs):
+        valid_purposes = set(ExhibitionProductPurpose.values)
+        products = list(exhibition_products_for_event(request.event))
+        unknown_purpose = False
+
+        with transaction.atomic():
+            for product in products:
+                purpose = request.POST.get(f"product_{product.pk}_purpose", "")
+                if purpose and purpose not in valid_purposes:
+                    unknown_purpose = True
+                    continue
+                role = getattr(product, "exhibition_product", None)
+                if not purpose:
+                    if role is not None:
+                        role.delete()
+                        product.log_action(
+                            LOG_PRODUCT_CHANGED,
+                            data={"purpose": None},
+                            user=request.user,
+                        )
+                    continue
+
+                # An exhibition product is the booth, so its checkbox is not offered.
+                includes_booth = (
+                    purpose == ExhibitionProductPurpose.EXHIBITION
+                    or request.POST.get(f"product_{product.pk}_booth") == "on"
+                )
+                if role is None:
+                    role = ExhibitionProduct(product=product)
+                elif role.purpose == purpose and role.includes_booth == includes_booth:
+                    continue
+                role.purpose = purpose
+                role.includes_booth = includes_booth
+                role.full_clean(exclude=["product"])
+                role.save()
+                product.log_action(
+                    LOG_PRODUCT_CHANGED,
+                    data={"purpose": role.purpose, "includes_booth": role.includes_booth},
+                    user=request.user,
+                )
+
+        if unknown_purpose:
+            messages.error(request, _("Some products were left unchanged because their purpose was not recognized."))
+        else:
+            messages.success(request, _("Exhibition product settings have been saved."))
+        return redirect("plugins:exhibition:products", **event_kwargs(request.event))
 
 
 class ExhibitionQuestionListView(EventPermissionRequiredMixin, ListView):

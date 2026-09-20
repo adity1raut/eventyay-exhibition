@@ -6,7 +6,7 @@ from django.db import transaction
 from django.db.models import Q, QuerySet
 from django.utils import timezone
 from django_scopes import scope
-from eventyay.base.models import TalkSlot
+from eventyay.base.models import Product, Quota, TalkSlot
 from eventyay.common.urls import get_url_origin, normalize_url_scheme
 from eventyay.common.utils.language import localize_event_text
 from eventyay.talk_rules.agenda import is_agenda_visible
@@ -554,3 +554,37 @@ def store_voucher_csv(event, vouchers):
     cached.file.save(VOUCHER_CSV_FILENAME, ContentFile(build_voucher_csv(event, vouchers).encode("utf-8")))
     cached.save()
     return cached
+
+
+def exhibition_products_for_event(event) -> QuerySet:
+    """Every product of the event, with its exhibition role attached where one is set."""
+    return (
+        Product.objects.filter(event=event)
+        .select_related("category", "exhibition_product")
+        .prefetch_related("quotas")
+        .order_by("category__position", "category_id", "position", "pk")
+    )
+
+
+def mixed_booth_quotas(event) -> list:
+    """Quotas that pool booth products together with products that include no booth.
+
+    Booth capacity only means something if every product drawing on the quota actually
+    occupies exhibition space, so the organiser is told to split these into a separate
+    sponsorship quota.
+    """
+    mixed = []
+    quotas = Quota.objects.filter(event=event).prefetch_related("products__exhibition_product")
+    for quota in quotas:
+        roles = [
+            product.exhibition_product
+            for product in quota.products.all()
+            if getattr(product, "exhibition_product", None) is not None
+        ]
+        if not roles:
+            continue
+        if any(role.consumes_booth_capacity for role in roles) and any(
+            not role.consumes_booth_capacity for role in roles
+        ):
+            mixed.append(quota)
+    return mixed
