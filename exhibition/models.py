@@ -12,6 +12,7 @@ from django.utils.translation import gettext_lazy as _
 from django_countries import Countries
 from eventyay.base.models import Device, Event, Voucher
 from eventyay.base.models.base import LoggedModel
+from eventyay.base.models.fields import MultiStringField
 from eventyay.common.utils.language import localize_event_text
 from i18nfield.fields import I18nCharField, I18nTextField
 from i18nfield.strings import LazyI18nString
@@ -927,6 +928,10 @@ QUESTION_OPTION_VARIANTS = frozenset(
     }
 )
 
+# Only fields with a fixed set of answers can be depended on, because a dependency
+# is expressed as "the parent field has one of these values".
+DEPENDENCY_PARENT_VARIANTS = frozenset({ExhibitionQuestionVariant.BOOLEAN}) | QUESTION_OPTION_VARIANTS
+
 
 class ExhibitionQuestion(LoggedModel):
     event = models.ForeignKey(
@@ -949,6 +954,16 @@ class ExhibitionQuestion(LoggedModel):
     required = models.BooleanField(default=False, verbose_name=_("required"))
     active = models.BooleanField(default=True, verbose_name=_("active"))
     position = models.IntegerField(default=0)
+    dependency_question = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="dependent_questions",
+        verbose_name=_("Custom field dependency"),
+        help_text=_("This field will only be shown if the selected field has one of the specified values."),
+    )
+    dependency_values = MultiStringField(default=list, verbose_name=_("Dependency values"))
 
     class Meta:
         ordering = ("position", "id")
@@ -956,6 +971,14 @@ class ExhibitionQuestion(LoggedModel):
     @property
     def localized_question(self):
         return localize_event_text(self.question) or ""
+
+    def dependency_value_choices(self):
+        """The values a dependent field can be keyed on, as ``(value, label)`` pairs."""
+        if self.variant == ExhibitionQuestionVariant.BOOLEAN:
+            return [("True", _("is checked")), ("False", _("is not checked"))]
+        if self.variant in QUESTION_OPTION_VARIANTS:
+            return [(str(option.pk), str(option)) for option in self.options.all()]
+        return []
 
     def __str__(self):
         return self.localized_question or str(self.question)
