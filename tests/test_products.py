@@ -170,6 +170,57 @@ def test_clearing_the_purpose_drops_the_exhibition_role(event):
 
 @pytest.mark.django_db
 @override_settings(SITE_URL="https://testserver")
+def test_an_unknown_purpose_leaves_the_whole_submission_unchanged(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save()
+        gold = _product(event, "Gold Sponsor")
+        booth = _product(event, "Standard Booth")
+        ExhibitionProduct.objects.create(product=gold)
+        user = _organizer(event, can_change_items=True)
+
+    client = Client()
+    client.force_login(user)
+    response = client.post(
+        _products_url(event),
+        {
+            f"product_{gold.pk}_purpose": "",
+            f"product_{booth.pk}_purpose": "keynote",
+        },
+    )
+
+    assert response.status_code == 302
+    with scopes_disabled():
+        assert ExhibitionProduct.objects.filter(product=gold).exists()
+        assert not ExhibitionProduct.objects.filter(product=booth).exists()
+
+
+@pytest.mark.django_db
+@override_settings(SITE_URL="https://testserver")
+def test_a_product_the_request_does_not_mention_keeps_its_role(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save()
+        gold = _product(event, "Gold Sponsor")
+        digital = _product(event, "Digital Sponsor")
+        ExhibitionProduct.objects.create(product=digital, includes_booth=False)
+        user = _organizer(event, can_change_items=True)
+
+    client = Client()
+    client.force_login(user)
+    response = client.post(
+        _products_url(event),
+        {f"product_{gold.pk}_purpose": "exhibition"},
+    )
+
+    assert response.status_code == 302
+    with scopes_disabled():
+        assert ExhibitionProduct.objects.get(product=gold).purpose == ExhibitionProductPurpose.EXHIBITION
+        assert ExhibitionProduct.objects.get(product=digital).includes_booth is False
+
+
+@pytest.mark.django_db
+@override_settings(SITE_URL="https://testserver")
 def test_products_page_needs_the_product_permission(event):
     with scopes_disabled():
         event.plugins = "exhibition"

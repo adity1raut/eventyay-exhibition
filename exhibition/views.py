@@ -1651,14 +1651,28 @@ class ExhibitionProductListView(EventPermissionRequiredMixin, TemplateView):
     def post(self, request, *args, **kwargs):
         valid_purposes = set(ExhibitionProductPurpose.values)
         products = list(exhibition_products_for_event(request.event))
-        unknown_purpose = False
+
+        # Read the whole table before writing any of it. A submission that names one
+        # purpose we do not know is rejected as a whole: saving the rows around it would
+        # leave the organiser with a table that is half what they sent, and a log to match.
+        submitted = []
+        for product in products:
+            purpose_field = f"product_{product.pk}_purpose"
+            if purpose_field not in request.POST:
+                # A row the request never mentions is left as it is. Only the empty
+                # value the form itself sends means "not an exhibition product".
+                continue
+            purpose = request.POST[purpose_field]
+            if purpose and purpose not in valid_purposes:
+                messages.error(
+                    request,
+                    _("Nothing was saved because the purpose of one of the products was not recognized."),
+                )
+                return redirect("plugins:exhibition:products", **event_kwargs(request.event))
+            submitted.append((product, purpose))
 
         with transaction.atomic():
-            for product in products:
-                purpose = request.POST.get(f"product_{product.pk}_purpose", "")
-                if purpose and purpose not in valid_purposes:
-                    unknown_purpose = True
-                    continue
+            for product, purpose in submitted:
                 role = getattr(product, "exhibition_product", None)
                 if not purpose:
                     if role is not None:
@@ -1689,10 +1703,7 @@ class ExhibitionProductListView(EventPermissionRequiredMixin, TemplateView):
                     user=request.user,
                 )
 
-        if unknown_purpose:
-            messages.error(request, _("Some products were left unchanged because their purpose was not recognized."))
-        else:
-            messages.success(request, _("Exhibition product settings have been saved."))
+        messages.success(request, _("Exhibition product settings have been saved."))
         return redirect("plugins:exhibition:products", **event_kwargs(request.event))
 
 
