@@ -1,6 +1,6 @@
 from django.core.exceptions import FieldDoesNotExist
 from django.db.models import Prefetch
-from django.db.models.signals import pre_delete
+from django.db.models.signals import post_delete, pre_delete
 from django.dispatch import receiver
 from django.template.loader import get_template
 from django.templatetags.static import static
@@ -53,11 +53,14 @@ from .models import (
     ExhibitionProposal,
     ExhibitionProposalState,
     ExhibitionQuestion,
+    ExhibitionQuestionOption,
     ExhibitorDevice,
     ExhibitorInfo,
     ExhibitorSettings,
     ExhibitorVoucher,
     SponsorGroup,
+    clear_dependencies_on,
+    prune_dependency_option,
 )
 from .utils import add_external_image_csp_sources, public_exhibitors_queryset
 
@@ -294,6 +297,18 @@ def exhibition_mail_placeholders(sender, **kwargs):
             sample_voucher_list,
         ),
     ]
+
+
+@receiver(post_delete, sender=ExhibitionQuestionOption, dispatch_uid="exhibition_option_dependency_cleanup")
+def exhibition_option_dependency_cleanup(sender, instance, **kwargs):
+    """Keep dependency values in step with the answer options they point at."""
+    prune_dependency_option(instance)
+
+
+@receiver(pre_delete, sender=ExhibitionQuestion, dispatch_uid="exhibition_question_dependency_cleanup")
+def exhibition_question_dependency_cleanup(sender, instance, **kwargs):
+    """Leave no dependency pointing at a field that is going away."""
+    clear_dependencies_on(instance)
 
 
 @receiver(pre_delete, sender=ExhibitorInfo, dispatch_uid="exhibition_exhibitor_voucher_cleanup")
