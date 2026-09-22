@@ -98,6 +98,28 @@ def test_quota_mixing_booth_and_non_booth_products_is_flagged(event):
 
 
 @pytest.mark.django_db
+def test_quota_sharing_a_booth_with_a_product_without_a_role_is_flagged(event):
+    with scopes_disabled():
+        booth = _product(event, "Premium Booth")
+        ticket = _product(event, "Visitor Ticket")
+        ExhibitionProduct.objects.create(product=booth)
+
+        shared_quota = Quota.objects.create(event=event, name="Shared", size=100)
+        shared_quota.products.add(booth, ticket)
+
+        assert mixed_booth_quotas(event) == [shared_quota]
+
+
+@pytest.mark.django_db
+def test_quota_with_only_regular_products_is_not_flagged(event):
+    with scopes_disabled():
+        tickets_quota = Quota.objects.create(event=event, name="Tickets", size=500)
+        tickets_quota.products.add(_product(event, "Visitor Ticket"), _product(event, "Student Ticket"))
+
+        assert mixed_booth_quotas(event) == []
+
+
+@pytest.mark.django_db
 @override_settings(SITE_URL="https://testserver")
 def test_products_page_lists_the_event_products(event):
     with scopes_disabled():

@@ -571,20 +571,15 @@ def mixed_booth_quotas(event) -> list:
 
     Booth capacity only means something if every product drawing on the quota actually
     occupies exhibition space, so the organiser is told to split these into a separate
-    sponsorship quota.
+    sponsorship quota. A product with no exhibition role counts as one without a booth.
     """
     mixed = []
     quotas = Quota.objects.filter(event=event).prefetch_related("products__exhibition_product")
     for quota in quotas:
-        roles = [
-            product.exhibition_product
-            for product in quota.products.all()
-            if getattr(product, "exhibition_product", None) is not None
+        consumes_booth = [
+            role is not None and role.consumes_booth_capacity
+            for role in (getattr(product, "exhibition_product", None) for product in quota.products.all())
         ]
-        if not roles:
-            continue
-        if any(role.consumes_booth_capacity for role in roles) and any(
-            not role.consumes_booth_capacity for role in roles
-        ):
+        if any(consumes_booth) and not all(consumes_booth):
             mixed.append(quota)
     return mixed
