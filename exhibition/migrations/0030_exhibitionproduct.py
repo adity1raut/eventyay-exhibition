@@ -8,7 +8,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('base', '0075_voucher_limit_products'),
-        ('exhibition', '0028_question_dependency'),
+        ('exhibition', '0029_organization_banner_and_request_rename'),
     ]
 
     operations = [
