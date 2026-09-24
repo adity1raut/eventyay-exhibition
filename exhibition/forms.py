@@ -2249,7 +2249,6 @@ class ExhibitionProductForm(forms.Form):
 
     def __init__(self, *args, products=None, **kwargs):
         super().__init__(*args, **kwargs)
-        # Keyed by pk, so a row names its product without a query per row.
         self.products = products or {}
         self.product_object = self.products.get(self._submitted_product_pk())
         if self.product_object is not None:
@@ -2262,7 +2261,7 @@ class ExhibitionProductForm(forms.Form):
 
     def _submitted_product_pk(self):
         try:
-            return int(self["product"].value())
+            return int(self.data.get(self.add_prefix("product"), self.initial.get("product")))
         except (TypeError, ValueError):
             return None
 
@@ -2273,9 +2272,8 @@ class ExhibitionProductForm(forms.Form):
         return product
 
     def clean(self):
+        """An exhibition product is the booth, so an unticked box still means "with booth"."""
         cleaned_data = super().clean()
-        # An exhibition product is the booth, so the page does not offer it the choice
-        # and a submission that leaves the box unticked still means "with booth".
         if cleaned_data.get("purpose") == ExhibitionProductPurpose.EXHIBITION:
             cleaned_data["includes_booth"] = True
         return cleaned_data

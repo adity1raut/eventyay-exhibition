@@ -1658,12 +1658,34 @@ class ExhibitionProductListView(EventPermissionRequiredMixin, TemplateView):
             form_kwargs={"products": products},
         )
 
+    def known_products_only(self, formset):
+        """The same submission with the rows that name no product of this event dropped.
+
+        Such a row has nothing to draw, so the page cannot show it back to the organiser.
+        Leaving it in the formset would leave a hole in the row numbering that the next
+        submission could not fill, so the rows are renumbered without it and the page
+        stays usable.
+        """
+        kept = [form for form in formset.forms if form.product_object is not None]
+        if len(kept) == len(formset.forms):
+            return formset
+
+        data = {
+            f"{formset.prefix}-TOTAL_FORMS": str(len(kept)),
+            f"{formset.prefix}-INITIAL_FORMS": str(len(kept)),
+        }
+        for index, form in enumerate(kept):
+            prefix = formset.add_prefix(index)
+            data[f"{prefix}-product"] = form.product_object.pk
+            data[f"{prefix}-purpose"] = form["purpose"].value() or ""
+            if form["includes_booth"].value():
+                data[f"{prefix}-includes_booth"] = "on"
+        return self.get_formset(data=data)
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         formset = kwargs.get("formset") or self.get_formset()
         context["formset"] = formset
-        # A row the formset cannot tie to a product of this event has nothing to draw,
-        # and its form already carries the error that says so.
         context["product_rows"] = [
             {"product": form.product_object, "quotas": form.product_object.quotas.all(), "form": form}
             for form in formset
@@ -1680,7 +1702,7 @@ class ExhibitionProductListView(EventPermissionRequiredMixin, TemplateView):
         formset = self.get_formset(data=request.POST)
         if not formset.is_valid():
             messages.error(request, _("Nothing was saved because the form contained errors."))
-            return self.render_to_response(self.get_context_data(formset=formset))
+            return self.render_to_response(self.get_context_data(formset=self.known_products_only(formset)))
 
         with transaction.atomic():
             for form in formset:

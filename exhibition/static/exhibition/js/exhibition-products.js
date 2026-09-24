@@ -2,8 +2,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const table = document.querySelector(".exhibition-products-table");
     if (!table) return;
 
-    // A product without an exhibition purpose has no booth, and an exhibition product
-    // always has one, so the checkbox only makes sense for sponsorships.
     const syncBoothToggle = (row, purposeChanged = false) => {
         const purpose = row.querySelector(".exhibition-purpose-input");
         const toggle = row.querySelector(".exhibition-booth-toggle");
@@ -11,9 +9,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!purpose || !toggle || !input) return;
 
         if (purpose.value === "sponsorship") {
-            // A sponsorship comes with a booth unless the organiser turns it off, so a
-            // product that has just become one starts with the box ticked. A sponsorship
-            // that is already saved without a booth keeps the answer it was given.
             if (purposeChanged) {
                 input.checked = row.dataset.sponsorshipBooth !== "off";
             }

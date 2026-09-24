@@ -17,6 +17,7 @@
 {% block exhibitors_content %}
     <form action="" method="post">
         {% csrf_token %}
+        {% if formset %}{{ formset.management_form }}{% endif %}
         <fieldset>
             <legend>{% trans "Products" %}</legend>
             <p>
@@ -44,13 +45,13 @@
                 </div>
             {% endif %}
 
+            {% if formset.non_form_errors %}
+                <div class="alert alert-danger">
+                    {% for error in formset.non_form_errors %}<p>{{ error }}</p>{% endfor %}
+                </div>
+            {% endif %}
+
             {% if product_rows %}
-                {{ formset.management_form }}
-                {% if formset.non_form_errors %}
-                    <div class="alert alert-danger">
-                        {% for error in formset.non_form_errors %}<p>{{ error }}</p>{% endfor %}
-                    </div>
-                {% endif %}
                 <div class="table-responsive table-responsive-always mw-100">
                     <table class="table table-hover exhibition-products-table">
                         <thead>

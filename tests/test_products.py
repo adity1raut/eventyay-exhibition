@@ -21,6 +21,16 @@ def _organizer(event, email="organizer@example.com", **flags):
     return user
 
 
+def _other_event(event, slug="other-event"):
+    return Event.objects.create(
+        organizer=event.organizer,
+        name="Other Event",
+        slug=slug,
+        live=True,
+        date_from=now(),
+    )
+
+
 def _formset_payload(*rows):
     """The table posts one formset row per product, so tests speak the same language."""
     data = {
@@ -238,14 +248,7 @@ def test_a_product_of_another_event_is_rejected(event):
     with scopes_disabled():
         event.plugins = "exhibition"
         event.save()
-        other_event = Event.objects.create(
-            organizer=event.organizer,
-            name="Other Event",
-            slug="other-event",
-            live=True,
-            date_from=now(),
-        )
-        foreign = _product(other_event, "Someone else's booth")
+        foreign = _product(_other_event(event), "Someone else's booth")
         user = _organizer(event, can_change_items=True)
 
     client = Client()
@@ -258,6 +261,35 @@ def test_a_product_of_another_event_is_rejected(event):
     assert response.status_code == 200
     with scopes_disabled():
         assert not ExhibitionProduct.objects.filter(product=foreign).exists()
+
+
+@pytest.mark.django_db
+@override_settings(SITE_URL="https://testserver")
+def test_a_rejected_row_leaves_the_rest_of_the_table_submittable(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save()
+        gold = _product(event, "Gold Sponsor")
+        foreign = _product(_other_event(event), "Someone else's booth")
+        user = _organizer(event, can_change_items=True)
+
+    client = Client()
+    client.force_login(user)
+    response = client.post(
+        _products_url(event),
+        _formset_payload(
+            {"product": foreign.pk, "purpose": "exhibition"},
+            {"product": gold.pk, "purpose": "sponsorship"},
+        ),
+    )
+    content = response.content.decode()
+
+    assert response.status_code == 200
+    # The row that named no product of this event is gone and the rest are renumbered,
+    # so what the page shows back can be submitted again as it stands.
+    assert 'name="form-TOTAL_FORMS" value="1"' in content
+    assert f'name="form-0-product" value="{gold.pk}"' in content
+    assert f'value="{foreign.pk}"' not in content
 
 
 @pytest.mark.django_db
