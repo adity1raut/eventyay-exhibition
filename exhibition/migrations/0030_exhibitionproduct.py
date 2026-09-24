@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('base', '0075_voucher_limit_products'),
+        ('base', '__first__'),
         ('exhibition', '0029_organization_banner_and_request_rename'),
     ]
 

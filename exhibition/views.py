@@ -40,6 +40,7 @@ from .forms import (
     ExhibitionDefaultFieldForm,
     ExhibitionEmailQueueForm,
     ExhibitionMailTemplatesForm,
+    ExhibitionProductFormSet,
     ExhibitionQuestionForm,
     ExhibitionQuestionOptionFormSet,
     ExhibitionRequestExtraLinkFormSet,
@@ -78,7 +79,6 @@ from .models import (
     ExhibitionCustomEmailTemplate,
     ExhibitionEmailQueue,
     ExhibitionProduct,
-    ExhibitionProductPurpose,
     ExhibitionQuestion,
     ExhibitionQuestionOption,
     ExhibitionRequest,
@@ -1640,21 +1640,35 @@ class ExhibitionProductListView(EventPermissionRequiredMixin, TemplateView):
     permission = "can_change_items"
     template_name = "exhibitors/products.html"
 
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        rows = []
-        for product in exhibition_products_for_event(self.request.event):
+    def get_formset(self, data=None):
+        products = {product.pk: product for product in exhibition_products_for_event(self.request.event)}
+        initial = []
+        for product in products.values():
             role = getattr(product, "exhibition_product", None)
-            rows.append(
+            initial.append(
                 {
-                    "product": product,
+                    "product": product.pk,
                     "purpose": role.purpose if role else "",
                     "includes_booth": role.includes_booth if role else True,
-                    "quotas": list(product.quotas.all()),
                 }
             )
-        context["product_rows"] = rows
-        context["purpose_choices"] = ExhibitionProductPurpose.choices
+        return ExhibitionProductFormSet(
+            data=data,
+            initial=initial,
+            form_kwargs={"products": products},
+        )
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        formset = kwargs.get("formset") or self.get_formset()
+        context["formset"] = formset
+        # A row the formset cannot tie to a product of this event has nothing to draw,
+        # and its form already carries the error that says so.
+        context["product_rows"] = [
+            {"product": form.product_object, "quotas": form.product_object.quotas.all(), "form": form}
+            for form in formset
+            if form.product_object is not None
+        ]
         context["mixed_booth_quotas"] = mixed_booth_quotas(self.request.event)
         context["tickets_products_url"] = reverse(
             "control:event.products",
@@ -1663,31 +1677,17 @@ class ExhibitionProductListView(EventPermissionRequiredMixin, TemplateView):
         return context
 
     def post(self, request, *args, **kwargs):
-        valid_purposes = set(ExhibitionProductPurpose.values)
-        products = list(exhibition_products_for_event(request.event))
-
-        # Read the whole table before writing any of it. A submission that names one
-        # purpose we do not know is rejected as a whole: saving the rows around it would
-        # leave the organiser with a table that is half what they sent, and a log to match.
-        submitted = []
-        for product in products:
-            purpose_field = f"product_{product.pk}_purpose"
-            if purpose_field not in request.POST:
-                # A row the request never mentions is left as it is. Only the empty
-                # value the form itself sends means "not an exhibition product".
-                continue
-            purpose = request.POST[purpose_field]
-            if purpose and purpose not in valid_purposes:
-                messages.error(
-                    request,
-                    _("Nothing was saved because the purpose of one of the products was not recognized."),
-                )
-                return redirect("plugins:exhibition:products", **event_kwargs(request.event))
-            submitted.append((product, purpose))
+        formset = self.get_formset(data=request.POST)
+        if not formset.is_valid():
+            messages.error(request, _("Nothing was saved because the form contained errors."))
+            return self.render_to_response(self.get_context_data(formset=formset))
 
         with transaction.atomic():
-            for product, purpose in submitted:
+            for form in formset:
+                product = form.cleaned_data["product"]
+                purpose = form.cleaned_data["purpose"]
                 role = getattr(product, "exhibition_product", None)
+
                 if not purpose:
                     if role is not None:
                         role.delete()
@@ -1698,18 +1698,13 @@ class ExhibitionProductListView(EventPermissionRequiredMixin, TemplateView):
                         )
                     continue
 
-                # An exhibition product is the booth, so its checkbox is not offered.
-                includes_booth = (
-                    purpose == ExhibitionProductPurpose.EXHIBITION
-                    or request.POST.get(f"product_{product.pk}_booth") == "on"
-                )
+                includes_booth = form.cleaned_data["includes_booth"]
                 if role is None:
                     role = ExhibitionProduct(product=product)
                 elif role.purpose == purpose and role.includes_booth == includes_booth:
                     continue
                 role.purpose = purpose
                 role.includes_booth = includes_booth
-                role.full_clean(exclude=["product"])
                 role.save()
                 product.log_action(
                     LOG_PRODUCT_CHANGED,

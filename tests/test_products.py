@@ -1,8 +1,9 @@
 import pytest
 from django.test import Client, override_settings
 from django.urls import reverse
+from django.utils.timezone import now
 from django_scopes import scopes_disabled
-from eventyay.base.models import Product, Quota
+from eventyay.base.models import Event, Product, Quota
 from eventyay.base.models.auth import User
 
 from exhibition.models import ExhibitionProduct, ExhibitionProductPurpose
@@ -18,6 +19,20 @@ def _organizer(event, email="organizer@example.com", **flags):
     team = event.organizer.teams.create(name=email, all_events=True, **flags)
     team.members.add(user)
     return user
+
+
+def _formset_payload(*rows):
+    """The table posts one formset row per product, so tests speak the same language."""
+    data = {
+        "form-TOTAL_FORMS": str(len(rows)),
+        "form-INITIAL_FORMS": str(len(rows)),
+        "form-MIN_NUM_FORMS": "0",
+        "form-MAX_NUM_FORMS": "1000",
+    }
+    for index, row in enumerate(rows):
+        for name, value in row.items():
+            data[f"form-{index}-{name}"] = value
+    return data
 
 
 def _products_url(event):
@@ -94,7 +109,7 @@ def test_quota_mixing_booth_and_non_booth_products_is_flagged(event):
         sponsor_quota = Quota.objects.create(event=event, name="Gold sponsors", size=5)
         sponsor_quota.products.add(gold)
 
-        assert mixed_booth_quotas(event) == [booth_quota]
+        assert list(mixed_booth_quotas(event)) == [booth_quota]
 
 
 @pytest.mark.django_db
@@ -107,7 +122,7 @@ def test_quota_sharing_a_booth_with_a_product_without_a_role_is_flagged(event):
         shared_quota = Quota.objects.create(event=event, name="Shared", size=100)
         shared_quota.products.add(booth, ticket)
 
-        assert mixed_booth_quotas(event) == [shared_quota]
+        assert list(mixed_booth_quotas(event)) == [shared_quota]
 
 
 @pytest.mark.django_db
@@ -116,7 +131,7 @@ def test_quota_with_only_regular_products_is_not_flagged(event):
         tickets_quota = Quota.objects.create(event=event, name="Tickets", size=500)
         tickets_quota.products.add(_product(event, "Visitor Ticket"), _product(event, "Student Ticket"))
 
-        assert mixed_booth_quotas(event) == []
+        assert list(mixed_booth_quotas(event)) == []
 
 
 @pytest.mark.django_db
@@ -136,7 +151,8 @@ def test_products_page_lists_the_event_products(event):
 
     assert response.status_code == 200
     assert "Digital Sponsor" in content
-    assert f'name="product_{digital.pk}_purpose"' in content
+    assert 'name="form-0-purpose"' in content
+    assert f'name="form-0-product" value="{digital.pk}"' in content
 
 
 @pytest.mark.django_db
@@ -154,12 +170,11 @@ def test_organizer_assigns_a_purpose_and_booth_to_a_product(event):
     client.force_login(user)
     response = client.post(
         _products_url(event),
-        {
-            f"product_{gold.pk}_purpose": "sponsorship",
-            f"product_{gold.pk}_booth": "on",
-            f"product_{digital.pk}_purpose": "sponsorship",
-            f"product_{booth.pk}_purpose": "exhibition",
-        },
+        _formset_payload(
+            {"product": gold.pk, "purpose": "sponsorship", "includes_booth": "on"},
+            {"product": digital.pk, "purpose": "sponsorship"},
+            {"product": booth.pk, "purpose": "exhibition"},
+        ),
     )
 
     assert response.status_code == 302
@@ -183,7 +198,7 @@ def test_clearing_the_purpose_drops_the_exhibition_role(event):
 
     client = Client()
     client.force_login(user)
-    response = client.post(_products_url(event), {f"product_{product.pk}_purpose": ""})
+    response = client.post(_products_url(event), _formset_payload({"product": product.pk, "purpose": ""}))
 
     assert response.status_code == 302
     with scopes_disabled():
@@ -205,16 +220,68 @@ def test_an_unknown_purpose_leaves_the_whole_submission_unchanged(event):
     client.force_login(user)
     response = client.post(
         _products_url(event),
-        {
-            f"product_{gold.pk}_purpose": "",
-            f"product_{booth.pk}_purpose": "keynote",
-        },
+        _formset_payload(
+            {"product": gold.pk, "purpose": ""},
+            {"product": booth.pk, "purpose": "keynote"},
+        ),
     )
 
-    assert response.status_code == 302
+    assert response.status_code == 200
     with scopes_disabled():
         assert ExhibitionProduct.objects.filter(product=gold).exists()
         assert not ExhibitionProduct.objects.filter(product=booth).exists()
+
+
+@pytest.mark.django_db
+@override_settings(SITE_URL="https://testserver")
+def test_a_product_of_another_event_is_rejected(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save()
+        other_event = Event.objects.create(
+            organizer=event.organizer,
+            name="Other Event",
+            slug="other-event",
+            live=True,
+            date_from=now(),
+        )
+        foreign = _product(other_event, "Someone else's booth")
+        user = _organizer(event, can_change_items=True)
+
+    client = Client()
+    client.force_login(user)
+    response = client.post(
+        _products_url(event),
+        _formset_payload({"product": foreign.pk, "purpose": "exhibition"}),
+    )
+
+    assert response.status_code == 200
+    with scopes_disabled():
+        assert not ExhibitionProduct.objects.filter(product=foreign).exists()
+
+
+@pytest.mark.django_db
+@override_settings(SITE_URL="https://testserver")
+def test_the_same_product_twice_in_one_submission_is_rejected(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save()
+        gold = _product(event, "Gold Sponsor")
+        user = _organizer(event, can_change_items=True)
+
+    client = Client()
+    client.force_login(user)
+    response = client.post(
+        _products_url(event),
+        _formset_payload(
+            {"product": gold.pk, "purpose": "exhibition"},
+            {"product": gold.pk, "purpose": "sponsorship"},
+        ),
+    )
+
+    assert response.status_code == 200
+    with scopes_disabled():
+        assert not ExhibitionProduct.objects.filter(product=gold).exists()
 
 
 @pytest.mark.django_db
@@ -232,7 +299,7 @@ def test_a_product_the_request_does_not_mention_keeps_its_role(event):
     client.force_login(user)
     response = client.post(
         _products_url(event),
-        {f"product_{gold.pk}_purpose": "exhibition"},
+        _formset_payload({"product": gold.pk, "purpose": "exhibition"}),
     )
 
     assert response.status_code == 302

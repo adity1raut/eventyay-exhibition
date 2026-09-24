@@ -45,6 +45,12 @@
             {% endif %}
 
             {% if product_rows %}
+                {{ formset.management_form }}
+                {% if formset.non_form_errors %}
+                    <div class="alert alert-danger">
+                        {% for error in formset.non_form_errors %}<p>{{ error }}</p>{% endfor %}
+                    </div>
+                {% endif %}
                 <div class="table-responsive table-responsive-always mw-100">
                     <table class="table table-hover exhibition-products-table">
                         <thead>
@@ -60,9 +66,17 @@
                         {% for row in product_rows %}
                             <tr class="exhibition-product-row">
                                 <th>
+                                    {{ row.form.product }}
                                     <a href="{% url 'control:event.product' organizer=request.event.organizer.slug event=request.event.slug product=row.product.pk %}">{{ row.product }}</a>
                                     {% if not row.product.active %}
                                         <small class="text-muted">{% trans "Inactive" %}</small>
+                                    {% endif %}
+                                    {% if row.form.errors %}
+                                        {% for field_errors in row.form.errors.values %}
+                                            {% for error in field_errors %}
+                                                <div class="help-block text-danger">{{ error }}</div>
+                                            {% endfor %}
+                                        {% endfor %}
                                     {% endif %}
                                 </th>
                                 <td>{% if row.product.category %}{{ row.product.category }}{% else %}<span class="text-muted">&ndash;</span>{% endif %}</td>
@@ -73,22 +87,10 @@
                                         <span class="text-muted">&ndash;</span>
                                     {% endfor %}
                                 </td>
-                                <td>
-                                    <select class="form-control exhibition-purpose-input"
-                                            name="product_{{ row.product.pk }}_purpose"
-                                            aria-label="{% blocktrans trimmed with product=row.product %}Exhibition purpose for {{ product }}{% endblocktrans %}">
-                                        <option value="" {% if not row.purpose %}selected{% endif %}>{% trans "Not an exhibition product" %}</option>
-                                        {% for value, label in purpose_choices %}
-                                            <option value="{{ value }}" {% if row.purpose == value %}selected{% endif %}>{{ label }}</option>
-                                        {% endfor %}
-                                    </select>
-                                </td>
+                                <td>{{ row.form.purpose }}</td>
                                 <td class="text-center">
-                                    <label class="toggle-switch exhibition-booth-toggle"
-                                           aria-label="{% blocktrans trimmed with product=row.product %}Includes an exhibition booth for {{ product }}{% endblocktrans %}">
-                                        <input type="checkbox" class="exhibition-booth-input"
-                                               name="product_{{ row.product.pk }}_booth"
-                                               {% if row.includes_booth %}checked{% endif %}>
+                                    <label class="toggle-switch exhibition-booth-toggle">
+                                        {{ row.form.includes_booth }}
                                         <span class="toggle-slider"></span>
                                     </label>
                                 </td>

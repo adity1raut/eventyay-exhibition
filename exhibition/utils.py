@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, quote_plus, urlparse
 
 from django.db import transaction
-from django.db.models import Q, QuerySet
+from django.db.models import Count, F, Q, QuerySet
 from django.utils import timezone
 from django_scopes import scope
 from eventyay.base.models import Product, Quota, TalkSlot
@@ -562,20 +562,24 @@ def exhibition_products_for_event(event) -> QuerySet:
     )
 
 
-def mixed_booth_quotas(event) -> list:
+def mixed_booth_quotas(event) -> QuerySet:
     """Quotas that pool booth products together with products that include no booth.
 
     Booth capacity only means something if every product drawing on the quota actually
     occupies exhibition space, so the organiser is told to split these into a separate
-    sponsorship quota. A product with no exhibition role counts as one without a booth.
+    sponsorship quota. A product with no exhibition role counts as one without a booth,
+    which is why the comparison is against the quota's whole product count.
     """
-    mixed = []
-    quotas = Quota.objects.filter(event=event).prefetch_related("products__exhibition_product")
-    for quota in quotas:
-        consumes_booth = [
-            role is not None and role.consumes_booth_capacity
-            for role in (getattr(product, "exhibition_product", None) for product in quota.products.all())
-        ]
-        if any(consumes_booth) and not all(consumes_booth):
-            mixed.append(quota)
-    return mixed
+    return (
+        Quota.objects.filter(event=event)
+        .annotate(
+            booth_product_count=Count(
+                "products",
+                filter=Q(products__exhibition_product__includes_booth=True),
+                distinct=True,
+            ),
+            product_count=Count("products", distinct=True),
+        )
+        .filter(booth_product_count__gt=0)
+        .exclude(booth_product_count=F("product_count"))
+    )

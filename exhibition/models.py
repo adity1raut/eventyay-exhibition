@@ -1142,13 +1142,9 @@ class ExhibitionProduct(models.Model):
         """Only products that come with physical exhibition space take up a booth."""
         return self.includes_booth
 
-    def clean(self):
-        super().clean()
-        # An exhibition product *is* the booth, so the choice does not apply to it.
-        if self.is_exhibition:
-            self.includes_booth = True
-
     def save(self, *args, **kwargs):
+        # An exhibition product *is* the booth, so the choice does not apply to it. Saving
+        # is the one place that settles this, so no caller can store another answer.
         if self.is_exhibition and not self.includes_booth:
             self.includes_booth = True
             update_fields = kwargs.get("update_fields")
