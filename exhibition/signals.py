@@ -40,8 +40,10 @@ from .models import (
     LOG_ORGANIZATION_CHANGED,
     LOG_ORGANIZATION_CREATED,
     LOG_ORGANIZATION_DELETED,
+    LOG_ORGANIZATION_PUBLISHED,
     LOG_ORGANIZATION_REACTIVATED,
     LOG_ORGANIZATION_SYNCED,
+    LOG_ORGANIZATION_UNPUBLISHED,
     LOG_PREFIX,
     LOG_PRODUCT_CHANGED,
     LOG_QUESTION_ADDED,
@@ -135,9 +137,9 @@ def presale_supported_by(sender, request=None, **kwargs):
         SponsorGroup.objects.filter(event=sender, show_on_front_page=True).prefetch_related(
             Prefetch(
                 "organizations",
-                queryset=ExhibitorInfo.objects.filter(event=sender, is_sponsor=True, active=True).order_by(
-                    "sponsor_position", "name"
-                ),
+                queryset=ExhibitorInfo.objects.filter(
+                    event=sender, is_sponsor=True, active=True, published=True
+                ).order_by("sponsor_position", "name"),
                 to_attr="front_page_organizations",
             )
         )
@@ -361,6 +363,8 @@ LOG_ENTRY_LABELS = {
     LOG_ORGANIZATION_CREATED: _("Organization profile created from an approved request."),
     LOG_ORGANIZATION_REACTIVATED: _("Organization profile reactivated after re-approval."),
     LOG_ORGANIZATION_SYNCED: _("Organization profile updated from the submitter's changes."),
+    LOG_ORGANIZATION_PUBLISHED: _("Organization profile published to the public event website."),
+    LOG_ORGANIZATION_UNPUBLISHED: _("Organization profile removed from the public event website."),
     LOG_ORGANIZATION_ADDED: _("Organization profile created."),
     LOG_ORGANIZATION_CHANGED: _("Organization profile changed."),
     LOG_ORGANIZATION_DELETED: _("Organization profile deleted."),

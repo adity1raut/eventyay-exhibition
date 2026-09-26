@@ -427,6 +427,7 @@ class ExhibitorInfoForm(ExhibitionQuestionFieldsMixin, I18nModelForm):
             "allow_lead_access",
             "lead_scanning_scope_by_device",
             "sessions",
+            "published",
         ]
         labels = {
             "name": _("Organization name"),
@@ -442,11 +443,17 @@ class ExhibitorInfoForm(ExhibitionQuestionFieldsMixin, I18nModelForm):
             "is_sponsor": _("Mark this organization as an event sponsor"),
             "booth_name": _("Preferred booth name"),
             "lead_scanning_enabled": _("Can scan attendee badges"),
+            "published": _("Show on the public event website"),
         }
         help_texts = {
             "lead_scanning_enabled": _(
                 "Lets this exhibitor sign in to the lead scanning app and scan attendees at their booth. "
                 "Turn this off to block scanning entirely."
+            ),
+            "header_image": _(
+                "Shown as the banner on the public exhibitor page. "
+                "Use a wide 3:1 image, for example 1500 x 500 pixels. Other shapes are "
+                "shown complete on a plain background there, but list cards crop to fill."
             ),
         }
 
@@ -1252,6 +1259,13 @@ class ExhibitionRequestForm(ExhibitionQuestionFieldsMixin, I18nModelForm):
             "url": _("Organization website"),
             "booth_name": _("Preferred booth name"),
             "notes": _("Message to the organizers"),
+        }
+        help_texts = {
+            "header_image": _(
+                "Shown as the banner on the public exhibitor page. "
+                "Use a wide 3:1 image, for example 1500 x 500 pixels. Other shapes are "
+                "shown complete on a plain background there, but list cards crop to fill."
+            ),
         }
         widgets = {
             "notes": forms.Textarea(attrs={"rows": 4}),

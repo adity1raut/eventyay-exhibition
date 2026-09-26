@@ -38,6 +38,7 @@ from .views import (
     ExhibitorDeviceManageView,
     ExhibitorEditView,
     ExhibitorListView,
+    ExhibitorPublishView,
     ExhibitorReorderView,
     ExhibitorVoucherBulkSendView,
     ExhibitorVoucherManageView,
@@ -183,6 +184,21 @@ urlpatterns = [
         "exhibitors/event/<orgslug:organizer>/<slug:event>/exhibitors/reorder",
         ExhibitorReorderView.as_view(),
         name="exhibitors.reorder",
+    ),
+    path(
+        "exhibitors/event/<orgslug:organizer>/<slug:event>/exhibitors/publish",
+        ExhibitorPublishView.as_view(organization_type="exhibitor"),
+        name="exhibitors.publish",
+    ),
+    path(
+        "exhibitors/event/<orgslug:organizer>/<slug:event>/sponsors/publish",
+        ExhibitorPublishView.as_view(organization_type="sponsor"),
+        name="sponsors.publish",
+    ),
+    path(
+        "exhibitors/event/<orgslug:organizer>/<slug:event>/organizations/publish",
+        ExhibitorPublishView.as_view(),
+        name="organizations.publish",
     ),
     path(
         "exhibitors/event/<orgslug:organizer>/<slug:event>/exhibitors/send-vouchers",

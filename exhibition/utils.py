@@ -61,14 +61,17 @@ def should_hide_applicant_emails(user, event, request=None) -> bool:
     return bool(reviewer_teams) and all(team.hide_exhibition_applicant_emails for team in reviewer_teams)
 
 
-def public_exhibitors_queryset(event) -> QuerySet["ExhibitorInfo"]:
+def public_exhibitors_queryset(event, *, include_unpublished=False) -> QuerySet["ExhibitorInfo"]:
+    """Exhibitors shown on the public site; organizers can preview unpublished ones before a publish round."""
     from .models import ExhibitorInfo
 
     has_logo = Q(logo__isnull=False) & ~Q(logo="")
     has_banner = Q(banner__isnull=False) & ~Q(banner="")
+    queryset = ExhibitorInfo.objects.filter(event=event, is_exhibitor=True, active=True)
+    if not include_unpublished:
+        queryset = queryset.filter(published=True)
     return (
-        ExhibitorInfo.objects.filter(event=event, is_exhibitor=True, active=True)
-        .filter(has_logo, has_banner)
+        queryset.filter(has_logo, has_banner)
         .prefetch_related("social_links", "extra_links")
         .order_by("exhibitor_position", "name", "pk")
     )

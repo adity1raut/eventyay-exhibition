@@ -52,7 +52,12 @@
                 {% csrf_token %}
             </form>
         {% endif %}
-        <p>
+        {% if publish_url %}
+            <form id="organization-publish" action="{{ publish_url }}{% if query_string %}?{{ query_string }}{% endif %}" method="post" data-organization-selection-form>
+                {% csrf_token %}
+            </form>
+        {% endif %}
+        <div class="organization-list-toolbar">
             {% if "can_change_event_settings" in request.eventpermset %}
                 <a href="{{ add_url }}" class="btn btn-default"><i class="fa fa-plus"></i>
                     {% if organization_type == 'sponsor' %}{% trans "Add a Sponsor" %}{% elif organization_type == 'exhibitor' %}{% trans "Add an Exhibitor" %}{% else %}{% trans "Add an Exhibitor or Sponsor" %}{% endif %}
@@ -66,9 +71,41 @@
                         <i class="fa fa-envelope"></i> {% trans "Send vouchers to all" %}
                     </button>
                 {% endif %}
+                {% if publish_url %}
+                    {% trans "Publish all approved" as label_publish_all %}
+                    {% trans "Publish selected" as label_publish %}
+                    {% trans "Unpublish selected" as label_unpublish %}
+                    <div class="btn-group organization-publish-actions" data-organization-publish-group>
+                        <button type="submit" form="organization-publish" name="action" value="publish_all" class="btn btn-primary" data-organization-publish-submit>
+                            <i class="fa fa-globe" data-organization-publish-icon></i>
+                            <span data-organization-publish-label>{{ label_publish_all }}</span>
+                        </button>
+                        <button type="button" class="btn btn-primary dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                            <span class="caret"></span>
+                            <span class="sr-only">{% trans "Choose a publishing action" %}</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-right">
+                            <li>
+                                <button type="button" data-organization-publish-mode="publish_all" data-icon="fa-globe" data-label="{{ label_publish_all }}">
+                                    <i class="fa fa-globe"></i> {{ label_publish_all }}
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" data-organization-publish-mode="publish" data-icon="fa-eye" data-label="{{ label_publish }}" data-needs-selection="1">
+                                    <i class="fa fa-eye"></i> {{ label_publish }}
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" data-organization-publish-mode="unpublish" data-icon="fa-eye-slash" data-label="{{ label_unpublish }}" data-needs-selection="1">
+                                    <i class="fa fa-eye-slash"></i> {{ label_unpublish }}
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
+                {% endif %}
                 <span class="text-muted" data-organization-selected-count></span>
             {% endif %}
-        </p>
+        </div>
 
         {% if not reorder_enabled and "can_change_event_settings" in request.eventpermset %}
             <p class="text-muted reorder-hint">
@@ -93,7 +130,7 @@
                         {% endif %}
                         <th>{% include "exhibitors/_sort_header.html" with field="name" label=label_name %}</th>
                         <th>{% trans "Group" %}</th>
-                        {% if "can_change_event_settings" in request.eventpermset %}<th>{% trans "Vouchers" %}</th>{% endif %}
+                        {% if "can_change_event_settings" in request.eventpermset %}<th>{% trans "Published" %}</th><th>{% trans "Vouchers" %}</th>{% endif %}
                         <th class="action-col-2"></th>
                     </tr>
                     </thead>
@@ -101,7 +138,7 @@
                         {% if section.organizations %}
                             <tbody {% if reorder_enabled %}dragsort-url="{% url 'plugins:exhibition:sponsors.reorder' organizer=request.event.organizer.slug event=request.event.slug %}?group_id={% if section.group %}{{ section.group.pk }}{% else %}none{% endif %}"{% endif %}>
                             {% for e in section.organizations %}
-                                {% include "exhibitors/_organization_row.html" with e=e organization_type=organization_type reorder_enabled=reorder_enabled %}
+                                {% include "exhibitors/_organization_row.html" with e=e organization_type=organization_type reorder_enabled=reorder_enabled publish_url=publish_url query_string=query_string %}
                             {% endfor %}
                             </tbody>
                         {% endif %}
@@ -123,13 +160,13 @@
                         <th>{% include "exhibitors/_sort_header.html" with field="name" label=label_name %}</th>
                         {% if not organization_type %}<th>{% trans "Group" %}</th>{% endif %}
                         <th>{% include "exhibitors/_sort_header.html" with field="booth" label=label_booth %}</th>
-                        {% if "can_change_event_settings" in request.eventpermset %}<th>{% trans "Vouchers" %}</th>{% endif %}
+                        {% if "can_change_event_settings" in request.eventpermset %}<th>{% trans "Published" %}</th><th>{% trans "Vouchers" %}</th>{% endif %}
                         <th class="action-col-2"></th>
                     </tr>
                     </thead>
                     <tbody {% if organization_type == 'exhibitor' and reorder_enabled %}dragsort-url="{% url 'plugins:exhibition:exhibitors.reorder' organizer=request.event.organizer.slug event=request.event.slug %}"{% endif %}>
                     {% for e in exhibitors %}
-                        {% include "exhibitors/_organization_row.html" with e=e organization_type=organization_type reorder_enabled=reorder_enabled %}
+                        {% include "exhibitors/_organization_row.html" with e=e organization_type=organization_type reorder_enabled=reorder_enabled publish_url=publish_url query_string=query_string %}
                     {% endfor %}
                     </tbody>
                 </table>

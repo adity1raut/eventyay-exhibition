@@ -44,6 +44,7 @@ def publish_talks(event):
 
 
 def exhibitor(event, **kwargs):
+    kwargs.setdefault("published", True)
     return ExhibitorInfo.objects.create(event=event, name="Acme", **kwargs)
 
 

@@ -35,6 +35,13 @@
         </td>
     {% endif %}
     {% if "can_change_event_settings" in request.eventpermset %}
+        <td class="organization-published-col">
+            {% if e.published %}
+                <span class="label label-success">{% trans "Published" %}</span>
+            {% else %}
+                <span class="text-muted">{% trans "Not published" %}</span>
+            {% endif %}
+        </td>
         <td class="organization-vouchers-col">
             {% if e.voucher_pending %}
                 <span class="label label-warning" title="{% trans "Waiting in the outbox" %}" data-toggle="tooltip">
@@ -60,6 +67,15 @@
                 <span data-toggle="tooltip" title="{% trans "Lead scanning is only available to exhibitors. Mark this sponsor as an exhibitor too to enable it." %}">
                     <button type="button" class="btn btn-default btn-sm" disabled><i class="fa fa-mobile"></i></button>
                 </span>
+            {% endif %}
+            {% if publish_url %}
+                <form action="{{ publish_url }}{% if query_string %}?{{ query_string }}{% endif %}" method="post" class="organization-row-publish">
+                    {% csrf_token %}
+                    <input type="hidden" name="selected" value="{{ e.id }}">
+                    <button type="submit" name="action" value="{% if e.published %}unpublish{% else %}publish{% endif %}" class="btn btn-default btn-sm" title="{% if e.published %}{% trans "Remove from the public website" %}{% else %}{% trans "Show on the public website" %}{% endif %}" data-toggle="tooltip">
+                        <i class="fa {% if e.published %}fa-eye-slash{% else %}fa-eye{% endif %}"></i>
+                    </button>
+                </form>
             {% endif %}
             <a href="{% url "plugins:exhibition:delete" organizer=request.event.organizer.slug event=request.event.slug pk=e.id %}?type={{ organization_type }}" class="btn btn-delete btn-danger btn-sm" title="{% trans "Delete" %}" data-toggle="tooltip"><i class="fa fa-trash"></i></a>
             {% if reorder_enabled %}

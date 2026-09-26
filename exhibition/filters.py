@@ -126,11 +126,21 @@ class ExhibitorFilterForm(ExhibitionFilterForm):
         "name": "name",
         "booth": "booth_id",
         "active": "active",
+        "published": "published",
     }
 
     query = forms.CharField(
         label=_("Search organizations…"),
         widget=search_widget(_("Search organizations…"), _("Search organizations")),
+        required=False,
+    )
+    published = forms.ChoiceField(
+        label=_("Publication"),
+        choices=(
+            ("", _("Any")),
+            ("1", _("Published")),
+            ("0", _("Not published")),
+        ),
         required=False,
     )
     active = forms.ChoiceField(
@@ -187,6 +197,8 @@ class ExhibitorFilterForm(ExhibitionFilterForm):
 
         if fdata.get("active"):
             queryset = apply_flag(queryset, "active", fdata["active"])
+
+        queryset = apply_flag(queryset, "published", fdata.get("published"))
 
         if fdata.get("sponsor_group"):
             queryset = queryset.filter(sponsor_group=fdata["sponsor_group"])

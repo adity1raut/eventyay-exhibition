@@ -65,6 +65,8 @@ def test_withdrawn_organization_hidden_from_public_queryset(event):
         exhibition_request.banner = "exhibition-requests/banners/banner.png"
         exhibition_request.save(update_fields=["logo", "banner"])
         exhibitor = create_exhibitor_from_request(exhibition_request)
+        exhibitor.published = True
+        exhibitor.save(update_fields=["published"])
         assert exhibitor in public_exhibitors_queryset(event)
 
         exhibition_request.refresh_from_db()
