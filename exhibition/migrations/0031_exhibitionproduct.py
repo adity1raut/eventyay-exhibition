@@ -8,7 +8,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('base', '__first__'),
-        ('exhibition', '0029_organization_banner_and_request_rename'),
+        ('exhibition', '0030_exhibitorinfo_published'),
     ]
 
     operations = [
