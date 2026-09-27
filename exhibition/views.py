@@ -708,7 +708,22 @@ class ExhibitorListView(EventPermissionRequiredMixin, FilteredListMixin, ListVie
         return sections + [ungrouped]
 
 
-class PublicExhibitorListView(ListView):
+class PublicExhibitorPreviewMixin:
+    @cached_property
+    def preview_unpublished(self):
+        """Organizers may look at the page as it will be once everything approved is published."""
+        if self.request.GET.get("preview") != "1":
+            return False
+        user = self.request.user
+        return user.is_authenticated and user.has_event_permission(
+            self.request.event.organizer, self.request.event, "can_change_event_settings", request=self.request
+        )
+
+    def public_exhibitors(self):
+        return public_exhibitors_queryset(self.request.event, include_unpublished=self.preview_unpublished)
+
+
+class PublicExhibitorListView(PublicExhibitorPreviewMixin, ListView):
     model = ExhibitorInfo
     template_name = "exhibitors/public_list.html"
     context_object_name = "exhibitors"
@@ -722,20 +737,8 @@ class PublicExhibitorListView(ListView):
             return redirect(request.path)
         return super().get(request, *args, **kwargs)
 
-    @cached_property
-    def preview_unpublished(self):
-        """Organizers may look at the page as it will be once everything approved is published."""
-        if self.request.GET.get("preview") != "1":
-            return False
-        user = self.request.user
-        return user.is_authenticated and user.has_event_permission(
-            self.request.event.organizer, self.request.event, "can_change_event_settings", request=self.request
-        )
-
     def get_queryset(self):
-        return self.filter_form.filter_qs(
-            public_exhibitors_queryset(self.request.event, include_unpublished=self.preview_unpublished)
-        )
+        return self.filter_form.filter_qs(self.public_exhibitors())
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -758,18 +761,20 @@ class PublicExhibitorListView(ListView):
         return context
 
 
-class PublicExhibitorDetailView(DetailView):
+class PublicExhibitorDetailView(PublicExhibitorPreviewMixin, DetailView):
     model = ExhibitorInfo
     template_name = "exhibitors/public_detail.html"
     context_object_name = "exhibitor"
 
     def get_queryset(self):
-        return public_exhibitors_queryset(self.request.event)
+        return self.public_exhibitors()
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        exhibitors = list(public_exhibitors_queryset(self.request.event))
+        # Previous/Next walk the same set the list shows, so a preview never steps onto a hidden page.
+        exhibitors = list(self.public_exhibitors())
         context["event"] = self.request.event
+        context["preview_unpublished"] = self.preview_unpublished
         context["social_image"] = self.object.visible_banner_url or self.object.visible_logo_url
         if len(exhibitors) > 1:
             current_index = next(index for index, exhibitor in enumerate(exhibitors) if exhibitor.pk == self.object.pk)

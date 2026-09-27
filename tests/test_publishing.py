@@ -1,8 +1,10 @@
 import pytest
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.backends.db import SessionStore
-from django.test import RequestFactory
+from django.test import Client, RequestFactory
+from django.urls import reverse
 from django_scopes import scopes_disabled
+from eventyay.base.models import Team
 from eventyay.base.models.auth import User
 
 from exhibition.filters import ExhibitorFilterForm
@@ -200,3 +202,69 @@ def test_re_approval_does_not_republish_on_its_own(event):
         exhibitor.refresh_from_db()
         assert exhibitor.active is True
         assert exhibitor.published is False
+
+
+def _public_url(event, name, **kwargs):
+    return reverse(
+        f"plugins:exhibition:{name}", kwargs={"organizer": event.organizer.slug, "event": event.slug, **kwargs}
+    )
+
+
+def _client(user=None):
+    client = Client()
+    if user:
+        client.force_login(user)
+    return client
+
+
+def _organizer_with_settings_access(event):
+    user = _organizer(event)
+    team = Team.objects.create(organizer=event.organizer, all_events=True, can_change_event_settings=True)
+    team.members.add(user)
+    return user
+
+
+@pytest.mark.django_db
+def test_preview_opens_the_page_of_an_unpublished_exhibitor(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        hidden = _exhibitor(event, name="Hidden", published=False)
+        organizer = _organizer_with_settings_access(event)
+
+    response = _client(organizer).get(_public_url(event, "public_detail", pk=hidden.pk) + "?preview=1")
+
+    assert response.status_code == 200
+    assert "Preview: this page also shows approved organizations" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_unpublished_exhibitor_page_stays_hidden_outside_an_organizer_preview(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        hidden = _exhibitor(event, name="Hidden", published=False)
+        organizer = _organizer_with_settings_access(event)
+        visitor = User.objects.create_user(email="visitor@example.com", password="pw")
+    url = _public_url(event, "public_detail", pk=hidden.pk)
+
+    assert _client().get(url + "?preview=1").status_code == 404
+    assert _client(visitor).get(url + "?preview=1").status_code == 404
+    assert _client(organizer).get(url).status_code == 404
+
+
+@pytest.mark.django_db
+def test_preview_links_stay_in_preview(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        shown = _exhibitor(event, name="Shown", published=True, exhibitor_position=0)
+        hidden = _exhibitor(event, name="Hidden", published=False, exhibitor_position=1)
+        organizer = _organizer_with_settings_access(event)
+    client = _client(organizer)
+
+    list_html = client.get(_public_url(event, "public_list") + "?preview=1").content.decode()
+    detail_html = client.get(_public_url(event, "public_detail", pk=hidden.pk) + "?preview=1").content.decode()
+
+    assert f'href="{_public_url(event, "public_detail", pk=hidden.pk)}?preview=1"' in list_html
+    assert f'href="{_public_url(event, "public_detail", pk=shown.pk)}?preview=1"' in detail_html
