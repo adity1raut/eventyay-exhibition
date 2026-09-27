@@ -36,7 +36,7 @@
             {% if exhibitors %}
                 <div class="exhibition-public-grid">
                     {% for exhibitor in exhibitors %}
-                        <a href="{% url 'plugins:exhibition:public_detail' organizer=request.event.organizer.slug event=request.event.slug pk=exhibitor.pk %}{% if preview_unpublished %}?preview=1{% endif %}" class="exhibition-public-card-link">
+                        <a href="{% url 'plugins:exhibition:public_detail' organizer=request.event.organizer.slug event=request.event.slug pk=exhibitor.pk %}{% if navigation_query %}?{{ navigation_query }}{% endif %}" class="exhibition-public-card-link">
                             <article class="exhibition-public-card">
                                 <div class="exhibition-public-card-image">
                                     <img src="{{ exhibitor.visible_banner_url }}" alt="{{ exhibitor.name|event_localize }}" loading="lazy">

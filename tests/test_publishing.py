@@ -268,3 +268,36 @@ def test_preview_links_stay_in_preview(event):
 
     assert f'href="{_public_url(event, "public_detail", pk=hidden.pk)}?preview=1"' in list_html
     assert f'href="{_public_url(event, "public_detail", pk=shown.pk)}?preview=1"' in detail_html
+
+
+@pytest.mark.django_db
+def test_detail_navigation_steps_through_the_filtered_list(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        north = _exhibitor(event, name="Acme North", published=True)
+        other = _exhibitor(event, name="Globex", published=True)
+        south = _exhibitor(event, name="Acme South", published=True)
+    client = _client()
+
+    list_html = client.get(_public_url(event, "public_list") + "?query=Acme").content.decode()
+    detail_html = client.get(_public_url(event, "public_detail", pk=north.pk) + "?query=Acme").content.decode()
+
+    assert f'href="{_public_url(event, "public_detail", pk=north.pk)}?query=Acme"' in list_html
+    assert f'href="{_public_url(event, "public_detail", pk=south.pk)}?query=Acme"' in detail_html
+    assert _public_url(event, "public_detail", pk=other.pk) not in detail_html
+
+
+@pytest.mark.django_db
+def test_detail_page_ignores_a_filter_it_no_longer_matches(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        north = _exhibitor(event, name="Acme North", published=True)
+        other = _exhibitor(event, name="Globex", published=True)
+        _exhibitor(event, name="Acme South", published=True)
+
+    response = _client().get(_public_url(event, "public_detail", pk=other.pk) + "?query=Acme")
+
+    assert response.status_code == 200
+    assert f'href="{_public_url(event, "public_detail", pk=north.pk)}"' in response.content.decode()
