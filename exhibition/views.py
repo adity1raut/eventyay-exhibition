@@ -652,6 +652,7 @@ class ExhibitorListView(EventPermissionRequiredMixin, FilteredListMixin, ListVie
         context["reorder_enabled"] = not self.filter_form.filtered and not context["is_paginated"]
         context["send_vouchers_url"] = self.send_vouchers_url()
         context["publish_url"] = self.publish_url()
+        context["public_preview_url"] = self.public_preview_url()
         context["query_string"] = self.request.GET.urlencode()
         if self.organization_type == "sponsor":
             context["sponsor_group_sections"] = self.build_sponsor_group_sections(context["exhibitors"])
@@ -683,6 +684,13 @@ class ExhibitorListView(EventPermissionRequiredMixin, FilteredListMixin, ListVie
             "exhibitor": "plugins:exhibition:exhibitors.publish",
         }.get(self.organization_type, "plugins:exhibition:organizations.publish")
         return reverse(route, kwargs=event_kwargs(self.request.event))
+
+    def public_preview_url(self):
+        """Public Exhibition page including approved exhibitors that are not published yet."""
+        # The public Exhibition page lists exhibitors only, so a sponsor list has nothing to preview there.
+        if self.organization_type == "sponsor":
+            return None
+        return reverse("plugins:exhibition:public_list", kwargs=event_kwargs(self.request.event)) + "?preview=1"
 
     def annotate_voucher_status(self, exhibitors):
         ids = [exhibitor.pk for exhibitor in exhibitors]

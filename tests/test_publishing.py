@@ -5,7 +5,7 @@ from django.test import Client, RequestFactory
 from django.urls import reverse
 from django_scopes import scopes_disabled
 from eventyay.base.models import Team
-from eventyay.base.models.auth import User
+from eventyay.base.models.auth import StaffSession, User
 
 from exhibition.filters import ExhibitorFilterForm
 from exhibition.models import ExhibitionRequest, ExhibitionRequestState, ExhibitorInfo
@@ -224,6 +224,16 @@ def _organizer_with_settings_access(event):
     return user
 
 
+def _staff_client(email, *, admin_mode):
+    """Log in a staff account, optionally with admin mode (an active staff session) switched on."""
+    client = _client(User.objects.create_user(email=email, password="pw", is_staff=True))
+    if admin_mode:
+        session = client.session
+        session.save()
+        StaffSession.objects.create(user=User.objects.get(email=email), session_key=session.session_key)
+    return client
+
+
 @pytest.mark.django_db
 def test_preview_opens_the_page_of_an_unpublished_exhibitor(event):
     with scopes_disabled():
@@ -246,11 +256,50 @@ def test_unpublished_exhibitor_page_stays_hidden_outside_an_organizer_preview(ev
         hidden = _exhibitor(event, name="Hidden", published=False)
         organizer = _organizer_with_settings_access(event)
         visitor = User.objects.create_user(email="visitor@example.com", password="pw")
+        order_viewer = User.objects.create_user(email="orders@example.com", password="pw")
+        team = Team.objects.create(organizer=event.organizer, all_events=True, can_view_orders=True)
+        team.members.add(order_viewer)
+        staff_outside_admin_mode = _staff_client("staff@example.com", admin_mode=False)
     url = _public_url(event, "public_detail", pk=hidden.pk)
 
     assert _client().get(url + "?preview=1").status_code == 404
     assert _client(visitor).get(url + "?preview=1").status_code == 404
+    assert _client(order_viewer).get(url + "?preview=1").status_code == 404
+    assert staff_outside_admin_mode.get(url + "?preview=1").status_code == 404
     assert _client(organizer).get(url).status_code == 404
+
+
+@pytest.mark.django_db
+def test_staff_in_admin_mode_can_preview_an_unpublished_exhibitor(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        hidden = _exhibitor(event, name="Hidden", published=False)
+        staff = _staff_client("admin-mode@example.com", admin_mode=True)
+
+    response = staff.get(_public_url(event, "public_detail", pk=hidden.pk) + "?preview=1")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.django_db
+def test_visitors_find_no_link_to_an_unpublished_exhibitor(event):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        shown = _exhibitor(event, name="Shown", published=True)
+        _exhibitor(event, name="Second", published=True)
+        hidden = _exhibitor(event, name="Hidden", published=False)
+    client = _client()
+    hidden_url = _public_url(event, "public_detail", pk=hidden.pk)
+
+    list_html = client.get(_public_url(event, "public_list") + "?preview=1").content.decode()
+    detail_html = client.get(_public_url(event, "public_detail", pk=shown.pk) + "?preview=1").content.decode()
+
+    assert hidden_url not in list_html
+    assert "Hidden" not in list_html
+    assert hidden_url not in detail_html
+    assert "Preview:" not in list_html
 
 
 @pytest.mark.django_db
@@ -301,3 +350,44 @@ def test_detail_page_ignores_a_filter_it_no_longer_matches(event):
 
     assert response.status_code == 200
     assert f'href="{_public_url(event, "public_detail", pk=north.pk)}"' in response.content.decode()
+
+
+def _organization_list(client, event, organization_type, settings):
+    settings.DEBUG = True
+    settings.COMPRESS_ENABLED = False
+    settings.COMPRESS_PRECOMPILERS = ()
+    url = reverse(
+        f"plugins:exhibition:{organization_type}",
+        kwargs={"organizer": event.organizer.slug, "event": event.slug},
+    )
+    return client.get(url)
+
+
+@pytest.mark.django_db
+def test_exhibitor_list_offers_the_public_preview(event, settings):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        _exhibitor(event, name="Hidden", published=False)
+        organizer = _organizer_with_settings_access(event)
+
+    response = _organization_list(_client(organizer), event, "exhibitors", settings)
+    html = response.content.decode()
+
+    assert response.status_code == 200
+    assert "Preview public page" in html
+    assert f'href="{_public_url(event, "public_list")}?preview=1"' in html
+
+
+@pytest.mark.django_db
+def test_sponsor_list_has_no_public_preview(event, settings):
+    with scopes_disabled():
+        event.plugins = "exhibition"
+        event.save(update_fields=["plugins"])
+        _exhibitor(event, name="Sponsor", published=False, is_exhibitor=False, is_sponsor=True)
+        organizer = _organizer_with_settings_access(event)
+
+    response = _organization_list(_client(organizer), event, "sponsors", settings)
+
+    assert response.status_code == 200
+    assert "Preview public page" not in response.content.decode()
