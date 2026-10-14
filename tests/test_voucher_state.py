@@ -272,8 +272,74 @@ def test_bulk_send_preview_lists_fully_claimed_organizations_separately(event):
         view = ExhibitorVoucherBulkSendView()
         view.request = request
         view.organization_type = "exhibitor"
-        sendable, _no_email, _no_vouchers, _pool_short, all_claimed = view.preview([halfway, done])
+        sendable, _no_email, _no_vouchers, _pool_short, all_claimed, _in_outbox = view.preview([halfway, done])
 
     assert sendable == [halfway]
     assert halfway.voucher_total == 1
     assert all_claimed == [done]
+
+
+def _bulk_send_view(event, data):
+    from django.contrib.messages.storage.fallback import FallbackStorage
+    from django.contrib.sessions.backends.db import SessionStore
+    from django.test import RequestFactory
+
+    from exhibition.views import ExhibitorVoucherBulkSendView
+
+    request = RequestFactory().post("/", data=data)
+    request.event = event
+    request.user = User.objects.create_user(email=f"sender-{next(_codes)}@example.com", password="pw")
+    request.session = SessionStore()
+    request._messages = FallbackStorage(request)
+    view = ExhibitorVoucherBulkSendView()
+    view.request = request
+    view.organization_type = "exhibitor"
+    view.kwargs = {}
+    return view, request
+
+
+@pytest.mark.django_db
+def test_a_voucher_email_already_in_the_outbox_is_not_queued_again(event):
+    with scopes_disabled():
+        ExhibitorSettings.objects.create(event=event, voucher_attach_csv=False)
+        organization = _organization(event, "Acme")
+        _vouchers(event, organization, 2)
+
+        first, _skipped = mail_helpers.queue_voucher_emails(event, [organization], issue_missing=True)
+        again, skipped = mail_helpers.queue_voucher_emails(event, [organization], issue_missing=True)
+
+        assert len(first) == 1
+        assert again == []
+        assert skipped[mail_helpers.VOUCHER_SKIP_IN_OUTBOX] == [organization]
+        assert ExhibitionEmailQueue.objects.filter(exhibitor=organization).count() == 1
+
+
+@pytest.mark.django_db
+def test_bulk_send_preview_lists_organizations_with_a_waiting_voucher_email(event):
+    with scopes_disabled():
+        organization = _organization(event, "Acme")
+        _vouchers(event, organization, 2)
+        _voucher_email(event, organization, sent=False)
+        view, _request = _bulk_send_view(event, {})
+
+        sendable, _no_email, _no_vouchers, _pool_short, _all_claimed, in_outbox = view.preview([organization])
+
+    assert sendable == []
+    assert in_outbox == [organization]
+
+
+@pytest.mark.django_db
+def test_confirming_only_fully_claimed_organizations_says_why(event):
+    with scopes_disabled():
+        done = _organization(event, "Done")
+        (voucher,) = _vouchers(event, done, 1)
+        _order_with(voucher)
+        view, request = _bulk_send_view(event, {"selected": [done.pk], "confirmed": "1"})
+
+        response = view.post(request)
+        notices = [str(message) for message in request._messages]
+
+    assert response.status_code == 302
+    assert "There is nobody to send vouchers to in this selection." in notices
+    assert "1 was skipped because all of their vouchers have already been claimed." in notices
+    assert not ExhibitionEmailQueue.objects.filter(exhibitor=done).exists()
