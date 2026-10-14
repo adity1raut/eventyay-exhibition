@@ -2432,15 +2432,6 @@ class ExhibitorVoucherManageView(EventPermissionRequiredMixin, DetailView):
         messages.success(request, _("Voucher returned to the pool."))
         return redirect(self.get_success_url())
 
-    def lock_voucher_links(self):
-        """Hold this organization's links so a concurrent return cannot drop a code we are about to email."""
-        return list(
-            ExhibitorVoucher.objects.filter(exhibitor=self.object)
-            .select_for_update()
-            .order_by("pk")
-            .values_list("pk", flat=True)
-        )
-
     def was_already_emailed(self, link):
         """Whether a voucher email went out after this code was assigned, and so lists it.
 
@@ -2492,23 +2483,45 @@ class ExhibitorVoucherManageView(EventPermissionRequiredMixin, DetailView):
 
     @transaction.atomic
     def send_vouchers(self, request):
-        """Take any requested vouchers from the pool, then outbox an email with the complete list."""
+        """Take any requested vouchers from the pool, then outbox an email with every unused code.
+
+        This takes the same locked, outbox-checked path as a bulk send, so the two can never queue
+        the same codes twice.
+        """
         form = ExhibitorVoucherBatchForm(request.POST)
         if not form.is_valid():
             return self.render_to_response(self.get_context_data(form=form))
-        if not self.object.recipient_email:
+        count = form.cleaned_data["count"] or 0
+        _email, vouchers, reason = mail_helpers.queue_unsent_voucher_email(
+            request.event, self.object, requestor=request.user, extra=count
+        )
+        if reason == mail_helpers.VOUCHER_SKIP_NO_EMAIL:
             messages.error(request, _("No email address is on file, so vouchers cannot be emailed."))
             return redirect(self.get_success_url())
-        count = form.cleaned_data["count"]
-        if count and not self.claim_vouchers(count):
+        if reason == mail_helpers.VOUCHER_SKIP_IN_OUTBOX:
+            messages.error(
+                request,
+                _(
+                    "A voucher email for this organization is already waiting in the outbox. "
+                    "Send or delete it there before preparing another one."
+                ),
+            )
+            return redirect(self.get_success_url())
+        if reason == mail_helpers.VOUCHER_SKIP_POOL_EMPTY:
             form.add_error("count", self.pool_short_message(count))
             return self.render_to_response(self.get_context_data(form=form))
-        self.lock_voucher_links()
-        vouchers = [link.voucher for link in self.voucher_links()]
-        if not vouchers:
+        if reason == mail_helpers.VOUCHER_SKIP_ALL_CLAIMED:
+            form.add_error(
+                "count",
+                _(
+                    "Every voucher this organization holds has already been claimed. "
+                    "Take more from the pool to email new ones."
+                ),
+            )
+            return self.render_to_response(self.get_context_data(form=form))
+        if reason:
             form.add_error("count", _("This organization holds no vouchers yet, so there is nothing to email."))
             return self.render_to_response(self.get_context_data(form=form))
-        mail_helpers.queue_voucher_email(request.event, self.object, vouchers, requestor=request.user)
         messages.success(
             request,
             ngettext(
@@ -2771,8 +2784,8 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
                 % {"count": in_outbox},
             )
 
-    @transaction.atomic
     def queue_all(self, sendable, *, requestor):
+        # No transaction around the batch: each organization commits on its own and frees its lock.
         return mail_helpers.queue_voucher_emails(self.request.event, sendable, requestor=requestor, issue_missing=True)
 
     def nothing_selected_message(self):
