@@ -788,6 +788,10 @@ def queue_voucher_emails(event, exhibitors, *, requestor=None, issue_missing=Fal
     skipped when every one of them has been claimed rather than issued new ones. An exhibitor
     whose voucher email still waits in the outbox is skipped, so a retried send does not queue
     the same codes twice.
+
+    Each exhibitor gets its own transaction, so a batch holds one organization's lock at a time
+    and two overlapping batches can never wait on each other. Do not call this inside an outer
+    transaction, which would keep every lock until the whole batch is done.
     """
     from .utils import event_exhibitor_settings
 
@@ -802,8 +806,8 @@ def queue_voucher_emails(event, exhibitors, *, requestor=None, issue_missing=Fal
     event_settings = event_exhibitor_settings(event) if issue_missing else None
     for exhibitor in exhibitors:
         with transaction.atomic():
-            email, reason = _queue_voucher_email_for(
-                event, exhibitor, event_settings, requestor=requestor, issue_missing=issue_missing
+            email, _vouchers, reason = queue_unsent_voucher_email(
+                event, exhibitor, requestor=requestor, issue_missing=issue_missing, event_settings=event_settings
             )
         if reason:
             skipped[reason].append(exhibitor)
@@ -812,32 +816,43 @@ def queue_voucher_emails(event, exhibitors, *, requestor=None, issue_missing=Fal
     return queued, skipped
 
 
-def _queue_voucher_email_for(event, exhibitor, event_settings, *, requestor, issue_missing):
-    """One exhibitor's part of a bulk send, as ``(email, skip reason)``.
+def queue_unsent_voucher_email(event, exhibitor, *, requestor=None, extra=0, issue_missing=False, event_settings=None):
+    """Queue one organization's voucher email with the codes nobody has used yet.
 
-    The organization row is locked first, so overlapping sends for the same organization run one
-    after the other: the second one sees the codes and the waiting email the first one created,
-    instead of claiming a second batch or queueing the same codes again.
+    Returns ``(email, vouchers, skip reason)``. Both the bulk send and the organization's voucher
+    page go through here, inside a transaction. The organization row is locked first, so
+    overlapping sends for the same organization run one after the other: the second one sees the
+    codes and the waiting email the first one created, instead of claiming a second batch or
+    queueing the same codes again. Its voucher links are locked as well, so a concurrent return to
+    the pool cannot drop a code that is about to be emailed.
+
+    ``extra`` codes are taken from the pool first, all or none. With ``issue_missing``, an
+    organization holding no vouchers is given its default share instead of being skipped.
     """
-    from .models import ExhibitorInfo
-    from .utils import resolve_voucher_defaults
+    from .models import ExhibitorInfo, ExhibitorVoucher
+    from .utils import claim_pool_vouchers, resolve_voucher_defaults
 
     ExhibitorInfo.objects.select_for_update().get(pk=exhibitor.pk)
     if not exhibitor.recipient_email:
-        return None, VOUCHER_SKIP_NO_EMAIL
+        return None, [], VOUCHER_SKIP_NO_EMAIL
     if organizations_with_voucher_email_in_outbox([exhibitor]):
-        return None, VOUCHER_SKIP_IN_OUTBOX
+        return None, [], VOUCHER_SKIP_IN_OUTBOX
+    if extra:
+        pool_tag = resolve_voucher_defaults(exhibitor, event_settings=event_settings)["pool_tag"]
+        if not claim_pool_vouchers(exhibitor, extra, pool_tag=pool_tag):
+            return None, [], VOUCHER_SKIP_POOL_EMPTY
+    list(ExhibitorVoucher.objects.filter(exhibitor=exhibitor).select_for_update().order_by("pk").values_list("pk"))
     vouchers = exhibitor_vouchers(exhibitor)
     if vouchers:
         vouchers = unclaimed_vouchers(exhibitor, vouchers)
         if not vouchers:
-            return None, VOUCHER_SKIP_ALL_CLAIMED
+            return None, [], VOUCHER_SKIP_ALL_CLAIMED
     elif issue_missing:
         wanted = resolve_voucher_defaults(exhibitor, event_settings=event_settings)["count"]
         if claim_default_vouchers(exhibitor, event_settings=event_settings):
             vouchers = exhibitor_vouchers(exhibitor)
         elif wanted:
-            return None, VOUCHER_SKIP_POOL_EMPTY
+            return None, [], VOUCHER_SKIP_POOL_EMPTY
     if not vouchers:
-        return None, VOUCHER_SKIP_NO_VOUCHERS
-    return queue_voucher_email(event, exhibitor, vouchers, requestor=requestor), None
+        return None, [], VOUCHER_SKIP_NO_VOUCHERS
+    return queue_voucher_email(event, exhibitor, vouchers, requestor=requestor), vouchers, None

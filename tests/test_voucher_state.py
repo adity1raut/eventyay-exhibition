@@ -1,8 +1,11 @@
 import itertools
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
+from django.contrib.messages import get_messages
+from django.db import DatabaseError
 from django.test import Client
 from django.urls import reverse
 from django.utils.timezone import now
@@ -343,3 +346,103 @@ def test_confirming_only_fully_claimed_organizations_says_why(event):
     assert "There is nobody to send vouchers to in this selection." in notices
     assert "1 was skipped because all of their vouchers have already been claimed." in notices
     assert not ExhibitionEmailQueue.objects.filter(exhibitor=done).exists()
+
+
+@pytest.mark.django_db
+def test_a_failed_organization_keeps_the_emails_already_queued_for_others(event):
+    """The batch has no transaction of its own, so each organization commits and frees its lock."""
+    with scopes_disabled():
+        ExhibitorSettings.objects.create(event=event, voucher_attach_csv=False)
+        first = _organization(event, "First")
+        _vouchers(event, first, 1)
+        second = _organization(event, "Second")
+        _vouchers(event, second, 1)
+        view, request = _bulk_send_view(event, {})
+        queue_voucher_email = mail_helpers.queue_voucher_email
+
+        def deadlock_on_second(event, exhibitor, vouchers, **kwargs):
+            if exhibitor == second:
+                raise DatabaseError("deadlock detected")
+            return queue_voucher_email(event, exhibitor, vouchers, **kwargs)
+
+        with (
+            patch.object(mail_helpers, "queue_voucher_email", side_effect=deadlock_on_second),
+            pytest.raises(DatabaseError),
+        ):
+            view.queue_all([first, second], requestor=request.user)
+
+        assert ExhibitionEmailQueue.objects.filter(exhibitor=first).count() == 1
+        assert not ExhibitionEmailQueue.objects.filter(exhibitor=second).exists()
+
+
+def _send_from_voucher_page(event, organization, settings, count=0):
+    settings.DEBUG = True
+    settings.COMPRESS_ENABLED = False
+    settings.COMPRESS_PRECOMPILERS = ()
+    url = reverse(
+        "plugins:exhibition:vouchers",
+        kwargs={"organizer": event.organizer.slug, "event": event.slug, "pk": organization.pk},
+    )
+    response = _organizer_client(event).post(url, {"action": "send", "count": count})
+    return response, [str(message) for message in get_messages(response.wsgi_request)]
+
+
+@pytest.mark.django_db
+def test_the_voucher_page_emails_only_the_unused_codes(event, settings):
+    with scopes_disabled():
+        ExhibitorSettings.objects.create(event=event, voucher_attach_csv=False)
+        organization = _organization(event, "Acme")
+        used, unused = _vouchers(event, organization, 2)
+        _voucher_email(event, organization)
+        _order_with(used)
+
+    response, notices = _send_from_voucher_page(event, organization, settings)
+
+    assert response.status_code == 302
+    assert notices == ["An email with 1 voucher code was placed in the outbox."]
+    with scopes_disabled():
+        email = ExhibitionEmailQueue.objects.get(exhibitor=organization, sent_at__isnull=True)
+    assert unused.code in email.body
+    assert used.code not in email.body
+
+
+@pytest.mark.django_db
+def test_the_voucher_page_does_not_queue_a_second_email_while_one_waits(event, settings):
+    with scopes_disabled():
+        ExhibitorSettings.objects.create(event=event, voucher_attach_csv=False, voucher_pool_tag="pool")
+        organization = _organization(event, "Acme")
+        _vouchers(event, organization, 2)
+        _voucher_email(event, organization, sent=False)
+        product = Product.objects.get(event=event)
+        for _ in range(3):
+            Voucher.objects.create(event=event, product=product, tag="pool")
+
+    response, notices = _send_from_voucher_page(event, organization, settings, count=3)
+
+    assert response.status_code == 302
+    assert notices == [
+        "A voucher email for this organization is already waiting in the outbox. "
+        "Send or delete it there before preparing another one."
+    ]
+    with scopes_disabled():
+        assert ExhibitionEmailQueue.objects.filter(exhibitor=organization).count() == 1
+        assert ExhibitorVoucher.objects.filter(exhibitor=organization).count() == 2
+
+
+@pytest.mark.django_db
+def test_the_voucher_page_sends_nothing_once_every_code_is_claimed(event, settings):
+    with scopes_disabled():
+        ExhibitorSettings.objects.create(event=event, voucher_attach_csv=False)
+        organization = _organization(event, "Acme")
+        (voucher,) = _vouchers(event, organization, 1)
+        _voucher_email(event, organization)
+        _order_with(voucher)
+
+    response, _notices = _send_from_voucher_page(event, organization, settings)
+
+    assert response.status_code == 200
+    assert response.context["form"].errors["count"] == [
+        "Every voucher this organization holds has already been claimed. Take more from the pool to email new ones."
+    ]
+    with scopes_disabled():
+        assert not ExhibitionEmailQueue.objects.filter(exhibitor=organization, sent_at__isnull=True).exists()
