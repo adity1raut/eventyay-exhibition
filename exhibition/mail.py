@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 from django.conf import settings as django_settings
+from django.db import transaction
 from django.db.models import Q
 from django.urls import reverse
 from django.utils import timezone
@@ -710,6 +711,17 @@ def exhibitor_vouchers(exhibitor):
     return [link.voucher for link in links]
 
 
+def organizations_with_voucher_email_in_outbox(exhibitors):
+    """The pks of these organizations whose voucher email is still waiting in the outbox."""
+    from .models import ExhibitionEmailQueue
+
+    return set(
+        ExhibitionEmailQueue.objects.filter(
+            exhibitor__in=[exhibitor.pk for exhibitor in exhibitors], role=VOUCHERS, sent_at__isnull=True
+        ).values_list("exhibitor_id", flat=True)
+    )
+
+
 def unclaimed_vouchers(exhibitor, vouchers):
     """The given vouchers of this exhibitor that nobody has used in an order yet, in the same order."""
     from .utils import exhibitor_unredeemed_vouchers
@@ -756,6 +768,7 @@ VOUCHER_SKIP_NO_EMAIL = "no_email"
 VOUCHER_SKIP_NO_VOUCHERS = "no_vouchers"
 VOUCHER_SKIP_POOL_EMPTY = "pool_empty"
 VOUCHER_SKIP_ALL_CLAIMED = "all_claimed"
+VOUCHER_SKIP_IN_OUTBOX = "in_outbox"
 
 
 def claim_default_vouchers(exhibitor, *, event_settings=None):
@@ -772,9 +785,11 @@ def queue_voucher_emails(event, exhibitors, *, requestor=None, issue_missing=Fal
     With ``issue_missing``, an exhibitor holding no vouchers gets a batch created from their
     defaults first, so a bulk send does not skip everyone who was never issued vouchers by hand.
     An exhibitor who already holds vouchers is sent only the ones nobody has used yet, and is
-    skipped when every one of them has been claimed rather than issued new ones.
+    skipped when every one of them has been claimed rather than issued new ones. An exhibitor
+    whose voucher email still waits in the outbox is skipped, so a retried send does not queue
+    the same codes twice.
     """
-    from .utils import event_exhibitor_settings, resolve_voucher_defaults
+    from .utils import event_exhibitor_settings
 
     queued = []
     skipped = {
@@ -782,29 +797,47 @@ def queue_voucher_emails(event, exhibitors, *, requestor=None, issue_missing=Fal
         VOUCHER_SKIP_NO_VOUCHERS: [],
         VOUCHER_SKIP_POOL_EMPTY: [],
         VOUCHER_SKIP_ALL_CLAIMED: [],
+        VOUCHER_SKIP_IN_OUTBOX: [],
     }
     event_settings = event_exhibitor_settings(event) if issue_missing else None
     for exhibitor in exhibitors:
-        if not exhibitor.recipient_email:
-            skipped[VOUCHER_SKIP_NO_EMAIL].append(exhibitor)
-            continue
-        vouchers = exhibitor_vouchers(exhibitor)
-        if vouchers:
-            vouchers = unclaimed_vouchers(exhibitor, vouchers)
-            if not vouchers:
-                skipped[VOUCHER_SKIP_ALL_CLAIMED].append(exhibitor)
-                continue
-        elif issue_missing:
-            wanted = resolve_voucher_defaults(exhibitor, event_settings=event_settings)["count"]
-            if claim_default_vouchers(exhibitor, event_settings=event_settings):
-                vouchers = exhibitor_vouchers(exhibitor)
-            elif wanted:
-                skipped[VOUCHER_SKIP_POOL_EMPTY].append(exhibitor)
-                continue
-        if not vouchers:
-            skipped[VOUCHER_SKIP_NO_VOUCHERS].append(exhibitor)
-            continue
-        email = queue_voucher_email(event, exhibitor, vouchers, requestor=requestor)
-        if email is not None:
+        with transaction.atomic():
+            email, reason = _queue_voucher_email_for(
+                event, exhibitor, event_settings, requestor=requestor, issue_missing=issue_missing
+            )
+        if reason:
+            skipped[reason].append(exhibitor)
+        elif email is not None:
             queued.append(email)
     return queued, skipped
+
+
+def _queue_voucher_email_for(event, exhibitor, event_settings, *, requestor, issue_missing):
+    """One exhibitor's part of a bulk send, as ``(email, skip reason)``.
+
+    The organization row is locked first, so overlapping sends for the same organization run one
+    after the other: the second one sees the codes and the waiting email the first one created,
+    instead of claiming a second batch or queueing the same codes again.
+    """
+    from .models import ExhibitorInfo
+    from .utils import resolve_voucher_defaults
+
+    ExhibitorInfo.objects.select_for_update().get(pk=exhibitor.pk)
+    if not exhibitor.recipient_email:
+        return None, VOUCHER_SKIP_NO_EMAIL
+    if organizations_with_voucher_email_in_outbox([exhibitor]):
+        return None, VOUCHER_SKIP_IN_OUTBOX
+    vouchers = exhibitor_vouchers(exhibitor)
+    if vouchers:
+        vouchers = unclaimed_vouchers(exhibitor, vouchers)
+        if not vouchers:
+            return None, VOUCHER_SKIP_ALL_CLAIMED
+    elif issue_missing:
+        wanted = resolve_voucher_defaults(exhibitor, event_settings=event_settings)["count"]
+        if claim_default_vouchers(exhibitor, event_settings=event_settings):
+            vouchers = exhibitor_vouchers(exhibitor)
+        elif wanted:
+            return None, VOUCHER_SKIP_POOL_EMPTY
+    if not vouchers:
+        return None, VOUCHER_SKIP_NO_VOUCHERS
+    return queue_voucher_email(event, exhibitor, vouchers, requestor=requestor), None

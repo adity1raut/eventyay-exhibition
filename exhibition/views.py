@@ -2665,13 +2665,18 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
         Anyone holding no vouchers is still sendable when their pool can cover their share; the
         pool is drawn down as we go, so the preview reflects what the whole run would consume.
         Anyone already holding vouchers is resent the unused ones, or skipped once all are claimed.
+        Anyone whose voucher email still waits in the outbox is skipped, so it is not queued twice.
         """
         event_settings = event_exhibitor_settings(self.request.event)
+        waiting = mail_helpers.organizations_with_voucher_email_in_outbox(exhibitors)
         remaining = {}
-        sendable, no_email, no_vouchers, pool_short, all_claimed = [], [], [], [], []
+        sendable, no_email, no_vouchers, pool_short, all_claimed, in_outbox = [], [], [], [], [], []
         for exhibitor in exhibitors:
             if not exhibitor.recipient_email:
                 no_email.append(exhibitor)
+                continue
+            if exhibitor.pk in waiting:
+                in_outbox.append(exhibitor)
                 continue
             existing = mail_helpers.exhibitor_vouchers(exhibitor)
             if existing:
@@ -2695,14 +2700,14 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
             remaining[pool_tag] -= planned
             exhibitor.voucher_total = exhibitor.voucher_new = planned
             sendable.append(exhibitor)
-        return sendable, no_email, no_vouchers, pool_short, all_claimed
+        return sendable, no_email, no_vouchers, pool_short, all_claimed, in_outbox
 
     def post(self, request, *args, **kwargs):
         if not self.selected_pks():
             messages.info(request, self.nothing_selected_message())
             return redirect(self.list_url())
         exhibitors = list(self.target_queryset())
-        sendable, no_email, no_vouchers, pool_short, all_claimed = self.preview(exhibitors)
+        sendable, no_email, no_vouchers, pool_short, all_claimed, in_outbox = self.preview(exhibitors)
 
         if not request.POST.get("confirmed"):
             return render(
@@ -2715,55 +2720,72 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
                     "no_vouchers": no_vouchers,
                     "pool_short": pool_short,
                     "all_claimed": all_claimed,
+                    "in_outbox": in_outbox,
                     "selected": self.selected_pks(),
                     "list_url": self.list_url(),
                     "query_string": request.GET.urlencode(),
                 },
             )
 
-        if not sendable:
-            messages.info(request, _("There is nobody to send vouchers to in this selection."))
-            return redirect(self.list_url())
-
-        queued, skipped = self.queue_all(sendable, requestor=request.user)
-        messages.success(
-            request,
-            ngettext(
-                "%(count)d voucher email was placed in the outbox.",
-                "%(count)d voucher emails were placed in the outbox.",
-                len(queued),
-            )
-            % {"count": len(queued)},
-        )
-        missing_email = len(no_email) + len(skipped[mail_helpers.VOUCHER_SKIP_NO_EMAIL])
-        missing_vouchers = len(no_vouchers) + len(skipped[mail_helpers.VOUCHER_SKIP_NO_VOUCHERS])
-        if missing_email:
-            messages.warning(request, self.skipped_no_email_message(missing_email))
-        if missing_vouchers:
-            messages.warning(request, self.skipped_no_vouchers_message(missing_vouchers))
-        short = len(pool_short) + len(skipped[mail_helpers.VOUCHER_SKIP_POOL_EMPTY])
-        if short:
-            messages.warning(
+        skipped = {}
+        if sendable:
+            queued, skipped = self.queue_all(sendable, requestor=request.user)
+            messages.success(
                 request,
+                ngettext(
+                    "%(count)d voucher email was placed in the outbox.",
+                    "%(count)d voucher emails were placed in the outbox.",
+                    len(queued),
+                )
+                % {"count": len(queued)},
+            )
+        else:
+            messages.info(request, _("There is nobody to send vouchers to in this selection."))
+        self.report_skipped(
+            no_email=len(no_email) + len(skipped.get(mail_helpers.VOUCHER_SKIP_NO_EMAIL, [])),
+            no_vouchers=len(no_vouchers) + len(skipped.get(mail_helpers.VOUCHER_SKIP_NO_VOUCHERS, [])),
+            pool_short=len(pool_short) + len(skipped.get(mail_helpers.VOUCHER_SKIP_POOL_EMPTY, [])),
+            all_claimed=len(all_claimed) + len(skipped.get(mail_helpers.VOUCHER_SKIP_ALL_CLAIMED, [])),
+            in_outbox=len(in_outbox) + len(skipped.get(mail_helpers.VOUCHER_SKIP_IN_OUTBOX, [])),
+        )
+        return redirect(self.list_url())
+
+    def report_skipped(self, *, no_email, no_vouchers, pool_short, all_claimed, in_outbox):
+        """Say why each skipped organization got no email, whether or not anyone else did."""
+        if no_email:
+            messages.warning(self.request, self.skipped_no_email_message(no_email))
+        if no_vouchers:
+            messages.warning(self.request, self.skipped_no_vouchers_message(no_vouchers))
+        if pool_short:
+            messages.warning(
+                self.request,
                 ngettext(
                     "%(count)d was skipped because no unassigned codes were available from their pool.",
                     "%(count)d were skipped because no unassigned codes were available from their pool.",
-                    short,
+                    pool_short,
                 )
-                % {"count": short},
+                % {"count": pool_short},
             )
-        claimed = len(all_claimed) + len(skipped[mail_helpers.VOUCHER_SKIP_ALL_CLAIMED])
-        if claimed:
+        if all_claimed:
             messages.info(
-                request,
+                self.request,
                 ngettext(
                     "%(count)d was skipped because all of their vouchers have already been claimed.",
                     "%(count)d were skipped because all of their vouchers have already been claimed.",
-                    claimed,
+                    all_claimed,
                 )
-                % {"count": claimed},
+                % {"count": all_claimed},
             )
-        return redirect(self.list_url())
+        if in_outbox:
+            messages.info(
+                self.request,
+                ngettext(
+                    "%(count)d was skipped because a voucher email for it is already waiting in the outbox.",
+                    "%(count)d were skipped because a voucher email for them is already waiting in the outbox.",
+                    in_outbox,
+                )
+                % {"count": in_outbox},
+            )
 
     @transaction.atomic
     def queue_all(self, sendable, *, requestor):
