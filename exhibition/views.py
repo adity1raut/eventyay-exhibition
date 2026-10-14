@@ -1,9 +1,7 @@
-import io
 import json
 import logging
 from urllib.parse import quote, urlencode
 
-from defusedcsv import csv
 from django.conf import settings as django_settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
@@ -29,6 +27,7 @@ from eventyay.control.permissions import EventPermissionRequiredMixin
 from eventyay.control.views import CreateView, PaginationMixin, UpdateView
 
 from . import mail as mail_helpers
+from .exports import build_organizations_csv, organizations_csv_filename
 from .filters import (
     EmailFilterForm,
     ExhibitorFilterForm,
@@ -626,33 +625,18 @@ class ExhibitorListView(EventPermissionRequiredMixin, FilteredListMixin, ListVie
                 request.event.organizer, request.event, "can_change_event_settings", request=request
             ):
                 raise PermissionDenied()
-            return self.download_keys_csv()
+            return self.download_csv()
         return super().get(request, *args, **kwargs)
 
-    def download_keys_csv(self):
-        queryset = self.get_queryset().prefetch_related("source_requests__user")
+    def download_csv(self):
+        """Everything stored about the listed organizations: the selected ones, or all that match."""
+        queryset = self.get_queryset()
         selected_pks = self.request.GET.getlist("pk")
         if selected_pks:
             queryset = queryset.filter(pk__in=selected_pks)
-
-        output = io.StringIO()
-        writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC, delimiter=",")
-        writer.writerow([_("Name"), _("Booth ID"), _("Booth name"), _("Email"), _("Access key")])
-        for exhibitor in queryset:
-            writer.writerow(
-                [
-                    localize_event_text(exhibitor.name) or str(exhibitor.name),
-                    exhibitor.booth_id or "",
-                    exhibitor.localized_booth_name,
-                    exhibitor.recipient_email,
-                    exhibitor.key,
-                ]
-            )
-        filename = {
-            "sponsor": "sponsor-keys.csv",
-            "exhibitor": "exhibitor-keys.csv",
-        }.get(self.organization_type, "organization-keys.csv")
-        response = HttpResponse(output.getvalue().encode("utf-8"), content_type="text/csv; charset=utf-8")
+        content = build_organizations_csv(self.request, queryset)
+        filename = organizations_csv_filename(self.request.event, self.organization_type)
+        response = HttpResponse(content.encode("utf-8"), content_type="text/csv; charset=utf-8")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         response["Cache-Control"] = "no-store"
         return response
