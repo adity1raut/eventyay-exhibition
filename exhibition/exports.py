@@ -19,7 +19,7 @@ from .models import (
     Lead,
     OrganizationVoucherState,
 )
-from .utils import localized_value_for
+from .utils import localized_value_for, public_exhibitors_queryset
 
 FILE_KINDS = {"exhibitor": "exhibitors", "sponsor": "sponsors"}
 
@@ -85,10 +85,9 @@ class _Exporter:
         self.questions = list(ExhibitionQuestion.objects.filter(event=self.event).order_by("position", "id"))
         self.lead_counts = self._counts(Lead, pks)
         self.device_counts = self._counts(ExhibitorDevice, pks)
-        exhibitor_order = ExhibitorInfo.objects.filter(event=self.event, is_exhibitor=True).order_by(
-            "exhibitor_position", "name", "pk"
-        )
-        self.positions = {pk: index for index, pk in enumerate(exhibitor_order.values_list("pk", flat=True), 1)}
+        # Numbered from the public page's own queryset, so hidden organizations get no position.
+        shown = public_exhibitors_queryset(self.event).prefetch_related(None).values_list("pk", flat=True)
+        self.positions = {pk: index for index, pk in enumerate(shown, 1)}
         with scope(event=self.event):
             sessions = ExhibitorInfo.sessions.through.objects.filter(exhibitorinfo_id__in=pks).select_related(
                 "submission"

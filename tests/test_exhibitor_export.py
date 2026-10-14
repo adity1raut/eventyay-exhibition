@@ -262,10 +262,29 @@ def test_download_holds_the_selection_or_every_filtered_row(event):
 
 @pytest.mark.django_db
 def test_file_name_has_the_event_and_the_date(event):
-    response = _download(_client(event), event)
+    client = _client(event)
+    before = now().astimezone(event.tz).date()
+    response = _download(client, event)
+    after = now().astimezone(event.tz).date()
 
-    expected = f'attachment; filename="{event.slug}-exhibitors-{now().astimezone(event.tz).date().isoformat()}.csv"'
-    assert response["Content-Disposition"] == expected
+    # Either date is right if the request ran across midnight in the event's time zone.
+    names = {f'attachment; filename="{event.slug}-exhibitors-{day.isoformat()}.csv"' for day in (before, after)}
+    assert response["Content-Disposition"] in names
+
+
+@pytest.mark.django_db
+def test_position_matches_the_public_exhibitor_page(event):
+    with scopes_disabled():
+        public = {"published": True, "logo": "exhibitors/logo.png", "banner": "exhibitors/banner.png"}
+        _organization(event, "Hidden", exhibitor_position=1, published=False, logo="x.png", banner="x.png")
+        _organization(event, "Inactive", exhibitor_position=2, active=False, **public)
+        _organization(event, "No banner", exhibitor_position=3, published=True, logo="x.png")
+        _organization(event, "First", exhibitor_position=4, **public)
+        _organization(event, "Second", exhibitor_position=5, **public)
+    rows, _header = _rows(_download(_client(event), event))
+    positions = {row["Name"]: row["Position on the public exhibitor page"] for row in rows}
+
+    assert positions == {"Hidden": "", "Inactive": "", "No banner": "", "First": "1", "Second": "2"}
 
 
 @pytest.mark.django_db
