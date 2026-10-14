@@ -68,8 +68,8 @@ def _download(client, event, query="", name="exhibitors"):
 def _rows(response):
     assert response.status_code == 200
     content = response.content.decode("utf-8")
-    assert content.startswith("﻿")
-    rows = list(csv.reader(io.StringIO(content.lstrip("﻿"))))
+    assert content.startswith("\ufeff")
+    rows = list(csv.reader(io.StringIO(content.lstrip("\ufeff"))))
     header, *body = rows
     return [dict(zip(header, row)) for row in body], header
 
@@ -289,3 +289,57 @@ def test_list_offers_download_exhibitors_instead_of_keys(event):
 
     assert "Download exhibitors" in html
     assert "Download exhibitor keys" not in html
+
+
+@pytest.mark.django_db
+def test_formula_like_values_cannot_run_as_formulas(event):
+    with scopes_disabled():
+        question = ExhibitionQuestion.objects.create(event=event, question={"en": "Notes"}, position=1)
+        sneaky = _organization(
+            event, '=HYPERLINK("https://evil.example","click")', description={"en": "+1+1"}, booth_name={"en": "\t=1"}
+        )
+        request = ExhibitionRequest.objects.create(
+            event=event,
+            user=User.objects.create_user(email="sneaky@example.com", password="pw"),
+            name="Sneaky",
+            state=ExhibitionRequestState.ACCEPTED,
+            submitted=now(),
+            approved_exhibitor=sneaky,
+        )
+        ExhibitionAnswer.objects.create(question=question, exhibition_request=request, answer="@SUM(A1:A9)")
+    rows, _header = _rows(_download(_client(event), event))
+
+    assert rows[0]["Name"] == '\'=HYPERLINK("https://evil.example","click")'
+    assert rows[0]["Description"] == "'+1+1"
+    assert rows[0]["Booth name"] == "'\t=1"
+    assert rows[0]["Notes"] == "'@SUM(A1:A9)"
+
+
+@pytest.mark.django_db
+def test_answers_are_exported_in_the_event_default_language(event):
+    with scopes_disabled():
+        event.settings.locale = "de"
+        event.settings.locales = ["de", "en"]
+        power = ExhibitionQuestion.objects.create(
+            event=event, question={"de": "Strom", "en": "Power"}, variant=ExhibitionQuestionVariant.BOOLEAN, position=1
+        )
+        acme = _organization(event, "Acme")
+        request = ExhibitionRequest.objects.create(
+            event=event,
+            user=User.objects.create_user(email="acme-applicant@example.com", password="pw"),
+            name="Acme",
+            state=ExhibitionRequestState.ACCEPTED,
+            submitted=now(),
+            approved_exhibitor=acme,
+        )
+        ExhibitionAnswer.objects.create(question=power, exhibition_request=request, answer="True")
+    client = _client(event)
+    client.cookies["django_language"] = "en"
+
+    rows, _header = _rows(_download(client, event))
+    values = list(rows[0].values())
+
+    # The organizer browses in English, but the file follows the event's default language.
+    assert rows[0]["Strom"] == "Ja"
+    assert "Nein" in values
+    assert "Yes" not in values and "No" not in values

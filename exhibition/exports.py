@@ -4,7 +4,7 @@ import io
 
 from defusedcsv import csv
 from django.db.models import Count, Prefetch
-from django.utils import timezone
+from django.utils import timezone, translation
 from django.utils.translation import gettext as _
 from django_scopes import scope
 
@@ -53,14 +53,27 @@ def build_organizations_csv(request, organizations) -> str:
             ),
         )
     )
-    exporter = _Exporter(request, organizations)
     output = io.StringIO()
     writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC, delimiter=",")
-    writer.writerow(exporter.headers())
-    for organization in organizations:
-        writer.writerow(exporter.row(organization))
+    # Labels, Yes/No and country names follow the event's default language, like the data does.
+    with translation.override(request.event.settings.locale):
+        exporter = _Exporter(request, organizations)
+        writer.writerow([_safe_cell(value) for value in exporter.headers()])
+        for organization in organizations:
+            writer.writerow([_safe_cell(value) for value in exporter.row(organization)])
     # The byte order mark makes Excel read the file as UTF-8; LibreOffice and Sheets ignore it.
-    return "﻿" + output.getvalue()
+    return "\ufeff" + output.getvalue()
+
+
+def _safe_cell(value):
+    """Keep a spreadsheet from running a cell as a formula.
+
+    defusedcsv already escapes cells starting with ``=``, ``+``, ``-`` or ``@``; a leading tab or
+    carriage return can start a formula too, so those are escaped the same way.
+    """
+    if isinstance(value, str) and value[:1] in ("\t", "\r"):
+        return "'" + value
+    return value
 
 
 class _Exporter:
