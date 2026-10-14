@@ -111,6 +111,7 @@ from .utils import (
     resolve_voucher_defaults,
     should_hide_applicant_emails,
     sync_exhibitor_from_request,
+    with_voucher_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -610,6 +611,7 @@ class ExhibitorListView(EventPermissionRequiredMixin, FilteredListMixin, ListVie
 
     def get_queryset(self):
         queryset = ExhibitorInfo.objects.filter(event=self.request.event).select_related("sponsor_group")
+        queryset = with_voucher_state(queryset, self.request.event)
         if self.organization_type == "sponsor":
             queryset = queryset.filter(is_sponsor=True).order_by("sponsor_position", "name", "pk")
         elif self.organization_type == "exhibitor":
@@ -665,7 +667,6 @@ class ExhibitorListView(EventPermissionRequiredMixin, FilteredListMixin, ListVie
         context["query_string"] = self.request.GET.urlencode()
         if self.organization_type == "sponsor":
             context["sponsor_group_sections"] = self.build_sponsor_group_sections(context["exhibitors"])
-        self.annotate_voucher_status(context["exhibitors"])
         return context
 
     def send_vouchers_url(self):
@@ -700,19 +701,6 @@ class ExhibitorListView(EventPermissionRequiredMixin, FilteredListMixin, ListVie
         if self.organization_type == "sponsor":
             return None
         return reverse("plugins:exhibition:public_list", kwargs=event_kwargs(self.request.event)) + "?preview=1"
-
-    def annotate_voucher_status(self, exhibitors):
-        ids = [exhibitor.pk for exhibitor in exhibitors]
-        if not ids:
-            return
-        rows = ExhibitionEmailQueue.objects.filter(exhibitor_id__in=ids, role=mail_helpers.VOUCHERS)
-        last_sent = dict(
-            rows.filter(sent_at__isnull=False).values_list("exhibitor_id").annotate(last_sent=Max("sent_at"))
-        )
-        pending = set(rows.filter(sent_at__isnull=True).values_list("exhibitor_id", flat=True))
-        for exhibitor in exhibitors:
-            exhibitor.voucher_sent_at = last_sent.get(exhibitor.pk)
-            exhibitor.voucher_pending = exhibitor.pk in pending
 
     def build_sponsor_group_sections(self, sponsors):
         groups = list(SponsorGroup.objects.filter(event=self.request.event).order_by("level", "pk"))
@@ -2676,17 +2664,22 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
 
         Anyone holding no vouchers is still sendable when their pool can cover their share; the
         pool is drawn down as we go, so the preview reflects what the whole run would consume.
+        Anyone already holding vouchers is resent the unused ones, or skipped once all are claimed.
         """
         event_settings = event_exhibitor_settings(self.request.event)
         remaining = {}
-        sendable, no_email, no_vouchers, pool_short = [], [], [], []
+        sendable, no_email, no_vouchers, pool_short, all_claimed = [], [], [], [], []
         for exhibitor in exhibitors:
             if not exhibitor.recipient_email:
                 no_email.append(exhibitor)
                 continue
-            existing = len(mail_helpers.exhibitor_vouchers(exhibitor))
+            existing = mail_helpers.exhibitor_vouchers(exhibitor)
             if existing:
-                exhibitor.voucher_total, exhibitor.voucher_new = existing, 0
+                unused = mail_helpers.unclaimed_vouchers(exhibitor, existing)
+                if not unused:
+                    all_claimed.append(exhibitor)
+                    continue
+                exhibitor.voucher_total, exhibitor.voucher_new = len(unused), 0
                 sendable.append(exhibitor)
                 continue
             defaults = resolve_voucher_defaults(exhibitor, event_settings=event_settings)
@@ -2702,14 +2695,14 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
             remaining[pool_tag] -= planned
             exhibitor.voucher_total = exhibitor.voucher_new = planned
             sendable.append(exhibitor)
-        return sendable, no_email, no_vouchers, pool_short
+        return sendable, no_email, no_vouchers, pool_short, all_claimed
 
     def post(self, request, *args, **kwargs):
         if not self.selected_pks():
             messages.info(request, self.nothing_selected_message())
             return redirect(self.list_url())
         exhibitors = list(self.target_queryset())
-        sendable, no_email, no_vouchers, pool_short = self.preview(exhibitors)
+        sendable, no_email, no_vouchers, pool_short, all_claimed = self.preview(exhibitors)
 
         if not request.POST.get("confirmed"):
             return render(
@@ -2721,6 +2714,7 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
                     "no_email": no_email,
                     "no_vouchers": no_vouchers,
                     "pool_short": pool_short,
+                    "all_claimed": all_claimed,
                     "selected": self.selected_pks(),
                     "list_url": self.list_url(),
                     "query_string": request.GET.urlencode(),
@@ -2757,6 +2751,17 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
                     short,
                 )
                 % {"count": short},
+            )
+        claimed = len(all_claimed) + len(skipped[mail_helpers.VOUCHER_SKIP_ALL_CLAIMED])
+        if claimed:
+            messages.info(
+                request,
+                ngettext(
+                    "%(count)d was skipped because all of their vouchers have already been claimed.",
+                    "%(count)d were skipped because all of their vouchers have already been claimed.",
+                    claimed,
+                )
+                % {"count": claimed},
             )
         return redirect(self.list_url())
 

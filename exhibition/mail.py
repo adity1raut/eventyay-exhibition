@@ -710,6 +710,14 @@ def exhibitor_vouchers(exhibitor):
     return [link.voucher for link in links]
 
 
+def unclaimed_vouchers(exhibitor, vouchers):
+    """The given vouchers of this exhibitor that nobody has used in an order yet, in the same order."""
+    from .utils import exhibitor_unredeemed_vouchers
+
+    unused = set(exhibitor_unredeemed_vouchers(exhibitor).values_list("pk", flat=True))
+    return [voucher for voucher in vouchers if voucher.pk in unused]
+
+
 def queue_voucher_email(event, exhibitor, vouchers, *, send_now=False, requestor=None):
     """Queue the voucher email for one exhibitor; ``None`` if there is no recipient address."""
     from .models import ExhibitionEmailQueue, ExhibitorSettings
@@ -747,6 +755,7 @@ def queue_voucher_email(event, exhibitor, vouchers, *, send_now=False, requestor
 VOUCHER_SKIP_NO_EMAIL = "no_email"
 VOUCHER_SKIP_NO_VOUCHERS = "no_vouchers"
 VOUCHER_SKIP_POOL_EMPTY = "pool_empty"
+VOUCHER_SKIP_ALL_CLAIMED = "all_claimed"
 
 
 def claim_default_vouchers(exhibitor, *, event_settings=None):
@@ -762,18 +771,30 @@ def queue_voucher_emails(event, exhibitors, *, requestor=None, issue_missing=Fal
 
     With ``issue_missing``, an exhibitor holding no vouchers gets a batch created from their
     defaults first, so a bulk send does not skip everyone who was never issued vouchers by hand.
+    An exhibitor who already holds vouchers is sent only the ones nobody has used yet, and is
+    skipped when every one of them has been claimed rather than issued new ones.
     """
     from .utils import event_exhibitor_settings, resolve_voucher_defaults
 
     queued = []
-    skipped = {VOUCHER_SKIP_NO_EMAIL: [], VOUCHER_SKIP_NO_VOUCHERS: [], VOUCHER_SKIP_POOL_EMPTY: []}
+    skipped = {
+        VOUCHER_SKIP_NO_EMAIL: [],
+        VOUCHER_SKIP_NO_VOUCHERS: [],
+        VOUCHER_SKIP_POOL_EMPTY: [],
+        VOUCHER_SKIP_ALL_CLAIMED: [],
+    }
     event_settings = event_exhibitor_settings(event) if issue_missing else None
     for exhibitor in exhibitors:
         if not exhibitor.recipient_email:
             skipped[VOUCHER_SKIP_NO_EMAIL].append(exhibitor)
             continue
         vouchers = exhibitor_vouchers(exhibitor)
-        if not vouchers and issue_missing:
+        if vouchers:
+            vouchers = unclaimed_vouchers(exhibitor, vouchers)
+            if not vouchers:
+                skipped[VOUCHER_SKIP_ALL_CLAIMED].append(exhibitor)
+                continue
+        elif issue_missing:
             wanted = resolve_voucher_defaults(exhibitor, event_settings=event_settings)["count"]
             if claim_default_vouchers(exhibitor, event_settings=event_settings):
                 vouchers = exhibitor_vouchers(exhibitor)
