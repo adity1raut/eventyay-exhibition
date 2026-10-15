@@ -1223,11 +1223,6 @@ class ExhibitorVoucher(models.Model):
 
 
 class OrganizationVoucherState(models.TextChoices):
-    """Where an organization is in the voucher process, as the organizer lists show it.
-
-    The wording follows the TeamShifts Members list, so the two read the same.
-    """
-
     NOT_SENT = "not_sent", _("Not sent")
     OUTBOX = "outbox", _("In outbox")
     SENT = "sent", _("Sent — not claimed")

@@ -712,7 +712,6 @@ def exhibitor_vouchers(exhibitor):
 
 
 def organizations_with_voucher_email_in_outbox(exhibitors):
-    """The pks of these organizations whose voucher email is still waiting in the outbox."""
     from .models import ExhibitionEmailQueue
 
     return set(
@@ -723,7 +722,6 @@ def organizations_with_voucher_email_in_outbox(exhibitors):
 
 
 def unclaimed_vouchers(exhibitor, vouchers):
-    """The given vouchers of this exhibitor that nobody has used in an order yet, in the same order."""
     from .utils import exhibitor_unredeemed_vouchers
 
     unused = set(exhibitor_unredeemed_vouchers(exhibitor).values_list("pk", flat=True))
@@ -784,14 +782,6 @@ def queue_voucher_emails(event, exhibitors, *, requestor=None, issue_missing=Fal
 
     With ``issue_missing``, an exhibitor holding no vouchers gets a batch created from their
     defaults first, so a bulk send does not skip everyone who was never issued vouchers by hand.
-    An exhibitor who already holds vouchers is sent only the ones nobody has used yet, and is
-    skipped when every one of them has been claimed rather than issued new ones. An exhibitor
-    whose voucher email still waits in the outbox is skipped, so a retried send does not queue
-    the same codes twice.
-
-    Each exhibitor gets its own transaction, so a batch holds one organization's lock at a time
-    and two overlapping batches can never wait on each other. Do not call this inside an outer
-    transaction, which would keep every lock until the whole batch is done.
     """
     from .utils import event_exhibitor_settings
 
@@ -817,18 +807,7 @@ def queue_voucher_emails(event, exhibitors, *, requestor=None, issue_missing=Fal
 
 
 def queue_unsent_voucher_email(event, exhibitor, *, requestor=None, extra=0, issue_missing=False, event_settings=None):
-    """Queue one organization's voucher email with the codes nobody has used yet.
-
-    Returns ``(email, vouchers, skip reason)``. Both the bulk send and the organization's voucher
-    page go through here, inside a transaction. The organization row is locked first, so
-    overlapping sends for the same organization run one after the other: the second one sees the
-    codes and the waiting email the first one created, instead of claiming a second batch or
-    queueing the same codes again. Its voucher links are locked as well, so a concurrent return to
-    the pool cannot drop a code that is about to be emailed.
-
-    ``extra`` codes are taken from the pool first, all or none. With ``issue_missing``, an
-    organization holding no vouchers is given its default share instead of being skipped.
-    """
+    """Lock the organization and queue its unused codes; returns ``(email, vouchers, skip reason)``."""
     from .models import ExhibitorInfo, ExhibitorVoucher
     from .utils import claim_pool_vouchers, resolve_voucher_defaults
 

@@ -76,7 +76,6 @@ def _states(event):
 
 @pytest.fixture
 def journey(event):
-    """One organization at each step of the voucher process."""
     with scopes_disabled():
         _organization(event, "Fresh")
 
@@ -190,7 +189,6 @@ def test_exhibitor_list_shows_each_voucher_state(journey, settings):
     assert "2 of 5 claimed" in html
     assert "Claimed" in html
     assert "2 of 2" in html
-    # The tooltip carries the last sent date together with the claimed count.
     assert "Last sent " in html and " · 2 of 5 claimed" in html
 
 
@@ -350,7 +348,6 @@ def test_confirming_only_fully_claimed_organizations_says_why(event):
 
 @pytest.mark.django_db
 def test_a_failed_organization_keeps_the_emails_already_queued_for_others(event):
-    """The batch has no transaction of its own, so each organization commits and frees its lock."""
     with scopes_disabled():
         ExhibitorSettings.objects.create(event=event, voucher_attach_csv=False)
         first = _organization(event, "First")
