@@ -620,14 +620,7 @@ def attendee_field_values(position, settings):
 
 
 def with_voucher_state(queryset, event) -> QuerySet:
-    """Annotate organizations with where they are in the voucher process.
-
-    ``voucher_total`` counts an organization's codes and ``voucher_claimed`` the ones used in an
-    order that is not cancelled, the same rule as ``exhibitor_unredeemed_vouchers``.
-    ``voucher_sent_at`` is the last voucher email sent and ``voucher_pending`` whether one waits
-    in the outbox. ``voucher_state`` combines them into one ``OrganizationVoucherState``, and
-    ``voucher_rank`` orders those states from not sent to fully claimed.
-    """
+    """Annotate voucher counts, the last send and an ``OrganizationVoucherState`` for the organizer lists."""
     from .mail import VOUCHERS
     from .models import ExhibitionEmailQueue, ExhibitorVoucher, OrganizationVoucherState
 

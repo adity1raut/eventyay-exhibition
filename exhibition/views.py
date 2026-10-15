@@ -2487,11 +2487,7 @@ class ExhibitorVoucherManageView(EventPermissionRequiredMixin, DetailView):
 
     @transaction.atomic
     def send_vouchers(self, request):
-        """Take any requested vouchers from the pool, then outbox an email with every unused code.
-
-        This takes the same locked, outbox-checked path as a bulk send, so the two can never queue
-        the same codes twice.
-        """
+        """Take any requested vouchers from the pool, then outbox an email with every unused code."""
         form = ExhibitorVoucherBatchForm(request.POST)
         if not form.is_valid():
             return self.render_to_response(self.get_context_data(form=form))
@@ -2665,8 +2661,6 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
 
         Anyone holding no vouchers is still sendable when their pool can cover their share; the
         pool is drawn down as we go, so the preview reflects what the whole run would consume.
-        Anyone already holding vouchers is resent the unused ones, or skipped once all are claimed.
-        Anyone whose voucher email still waits in the outbox is skipped, so it is not queued twice.
         """
         event_settings = event_exhibitor_settings(self.request.event)
         waiting = mail_helpers.organizations_with_voucher_email_in_outbox(exhibitors)
@@ -2752,7 +2746,6 @@ class ExhibitorVoucherBulkSendView(EventPermissionRequiredMixin, View):
         return redirect(self.list_url())
 
     def report_skipped(self, *, no_email, no_vouchers, pool_short, all_claimed, in_outbox):
-        """Say why each skipped organization got no email, whether or not anyone else did."""
         if no_email:
             messages.warning(self.request, self.skipped_no_email_message(no_email))
         if no_vouchers:

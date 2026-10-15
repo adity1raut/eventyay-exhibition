@@ -122,8 +122,6 @@ class RequestFilterForm(ExhibitionFilterForm):
 
 
 class ExhibitorFilterForm(ExhibitionFilterForm):
-    """Filters the organizer list; expects a queryset annotated by ``with_voucher_state``."""
-
     orders = {
         "name": "name",
         "booth": "booth_id",
