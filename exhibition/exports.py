@@ -1,12 +1,8 @@
-"""The organizations spreadsheet behind the "Download exhibitors" button on the organizer lists."""
-
-import io
-
-from defusedcsv import csv
 from django.db.models import Count, Prefetch
 from django.utils import timezone, translation
 from django.utils.translation import gettext as _
 from django_scopes import scope
+from eventyay.base.exporter import ListExporter
 
 from .models import (
     QUESTION_OPTION_VARIANTS,
@@ -21,71 +17,46 @@ from .models import (
 )
 from .utils import localized_value_for, public_exhibitors_queryset
 
+EXPORT_FORMAT_XLSX = "xlsx"
+EXPORT_FORMAT_CSV = "default"
+EXPORT_FORMATS = (EXPORT_FORMAT_XLSX, EXPORT_FORMAT_CSV)
 FILE_KINDS = {"exhibitor": "exhibitors", "sponsor": "sponsors"}
+FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
-def organizations_csv_filename(event, organization_type):
-    """``<event>-exhibitors-<date>.csv``, named after the list it was downloaded from."""
-    kind = FILE_KINDS.get(organization_type, "organizations")
-    return f"{event.slug}-{kind}-{timezone.now().astimezone(event.tz).date().isoformat()}.csv"
-
-
-def build_organizations_csv(request, organizations) -> str:
-    """Everything stored about each organization, one row each, in the order given.
-
-    ``organizations`` must be annotated by ``utils.with_voucher_state``, so the voucher columns
-    match the Vouchers column of the list. Text in several languages is exported in the
-    event's default language, fields with several values are one cell with a value per line,
-    and uploaded files are absolute links. Empty values stay blank.
-    """
-    organizations = list(
-        organizations.select_related("sponsor_group").prefetch_related(
-            "social_links",
-            "extra_links",
-            Prefetch(
-                "source_requests",
-                queryset=ExhibitionRequest.objects.select_related("user").prefetch_related(
-                    Prefetch(
-                        "answers",
-                        queryset=ExhibitionAnswer.objects.select_related("question").prefetch_related("options"),
-                    )
-                ),
-            ),
-        )
-    )
-    output = io.StringIO()
-    writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC, delimiter=",")
-    # Labels, Yes/No and country names follow the event's default language, like the data does.
-    with translation.override(request.event.settings.locale):
-        exporter = _Exporter(request, organizations)
-        writer.writerow([_safe_cell(value) for value in exporter.headers()])
-        for organization in organizations:
-            writer.writerow([_safe_cell(value) for value in exporter.row(organization)])
-    # The byte order mark makes Excel read the file as UTF-8; LibreOffice and Sheets ignore it.
-    return "\ufeff" + output.getvalue()
-
-
-def _safe_cell(value):
-    """Keep a spreadsheet from running a cell as a formula.
-
-    defusedcsv already escapes cells starting with ``=``, ``+``, ``-`` or ``@``; a leading tab or
-    carriage return can start a formula too, so those are escaped the same way.
-    """
-    if isinstance(value, str) and value[:1] in ("\t", "\r"):
+def neutralize_formula(value):
+    if isinstance(value, str) and value.startswith(FORMULA_PREFIXES):
         return "'" + value
     return value
 
 
-class _Exporter:
-    def __init__(self, request, organizations):
+class OrganizationsExporter(ListExporter):
+    identifier = "exhibition_organizations"
+
+    def __init__(self, request, organizations, organization_type=None):
+        super().__init__(request.event)
         self.request = request
-        self.event = request.event
+        self.organization_type = organization_type
         self.locale = self.event.settings.locale
-        pks = [organization.pk for organization in organizations]
+        self.organizations = list(
+            organizations.select_related("sponsor_group").prefetch_related(
+                "social_links",
+                "extra_links",
+                Prefetch(
+                    "source_requests",
+                    queryset=ExhibitionRequest.objects.select_related("user").prefetch_related(
+                        Prefetch(
+                            "answers",
+                            queryset=ExhibitionAnswer.objects.select_related("question").prefetch_related("options"),
+                        )
+                    ),
+                ),
+            )
+        )
+        pks = [organization.pk for organization in self.organizations]
         self.questions = list(ExhibitionQuestion.objects.filter(event=self.event).order_by("position", "id"))
         self.lead_counts = self._counts(Lead, pks)
         self.device_counts = self._counts(ExhibitorDevice, pks)
-        # Numbered from the public page's own queryset, so hidden organizations get no position.
         shown = public_exhibitors_queryset(self.event).prefetch_related(None).values_list("pk", flat=True)
         self.positions = {pk: index for index, pk in enumerate(shown, 1)}
         with scope(event=self.event):
@@ -96,6 +67,31 @@ class _Exporter:
             for link in sessions.order_by("submission__title"):
                 self.sessions.setdefault(link.exhibitorinfo_id, []).append(link.submission.title)
 
+    @property
+    def verbose_name(self):
+        if self.organization_type == "sponsor":
+            return _("Sponsors")
+        if self.organization_type == "exhibitor":
+            return _("Exhibitors")
+        return _("Organizations")
+
+    @property
+    def export_form_fields(self):
+        fields = super().export_form_fields
+        fields["_format"].choices = [choice for choice in fields["_format"].choices if choice[0] in EXPORT_FORMATS]
+        return fields
+
+    def get_filename(self):
+        kind = FILE_KINDS.get(self.organization_type, "organizations")
+        return f"{self.event.slug}-{kind}-{timezone.now().astimezone(self.event.tz).date().isoformat()}"
+
+    def iterate_list(self, form_data):
+        with translation.override(self.locale):
+            yield self.ProgressSetTotal(total=len(self.organizations))
+            yield [neutralize_formula(value) for value in self.headers()]
+            for organization in self.organizations:
+                yield [neutralize_formula(value) for value in self.row(organization)]
+
     @staticmethod
     def _counts(model, pks):
         rows = model.objects.filter(exhibitor_id__in=pks).values_list("exhibitor_id").annotate(count=Count("pk"))
@@ -103,7 +99,6 @@ class _Exporter:
 
     def headers(self):
         return [
-            # Organization
             _("Name"),
             _("Description"),
             _("Website"),
@@ -116,30 +111,24 @@ class _Exporter:
             _("Social media links"),
             _("Additional links"),
             _("Related sessions"),
-            # Status
             _("Type"),
             _("Sponsor group"),
             _("Published"),
             _("Active"),
             _("Position on the public exhibitor page"),
-            # Booth
             _("Booth ID"),
             _("Booth name"),
-            # Access and app
             _("Access key"),
             _("Lead scanning enabled"),
             _("Voucher access"),
             _("Lead access"),
             _("Lead scanning limited to registered devices"),
             _("Registered scanning devices"),
-            # Vouchers
             _("Vouchers assigned"),
             _("Vouchers claimed"),
             _("Voucher state"),
             _("Vouchers last sent"),
-            # Leads
             _("Leads scanned"),
-            # Application
             _("Request date"),
             _("Applicant name"),
             _("Applicant email"),
@@ -163,7 +152,7 @@ class _Exporter:
             self.lines(str(link) for link in organization.social_links.all()),
             self.lines(str(link) for link in organization.extra_links.all()),
             self.lines(self.sessions.get(organization.pk, ())),
-            self.organization_type(organization),
+            self.type_label(organization),
             self.text(organization.sponsor_group.name) if organization.sponsor_group else "",
             self.yes_no(organization.published),
             self.yes_no(organization.active),
@@ -189,7 +178,6 @@ class _Exporter:
 
     @staticmethod
     def application(organization):
-        """The request this organization was accepted from; the latest one if there are several."""
         requests = sorted(organization.source_requests.all(), key=lambda request: request.pk, reverse=True)
         return requests[0] if requests else None
 
@@ -203,7 +191,7 @@ class _Exporter:
         return str(answer.answer_string)
 
     @staticmethod
-    def organization_type(organization):
+    def type_label(organization):
         if organization.is_exhibitor and organization.is_sponsor:
             return _("Exhibitor and sponsor")
         if organization.is_sponsor:

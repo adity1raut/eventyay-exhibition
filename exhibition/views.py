@@ -8,7 +8,7 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Count, Max, Min, Q
-from django.http import Http404, HttpResponse, JsonResponse
+from django.http import Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.response import TemplateResponse
 from django.urls import reverse
@@ -27,7 +27,7 @@ from eventyay.control.permissions import EventPermissionRequiredMixin
 from eventyay.control.views import CreateView, PaginationMixin, UpdateView
 
 from . import mail as mail_helpers
-from .exports import build_organizations_csv, organizations_csv_filename
+from .exports import EXPORT_FORMAT_XLSX, EXPORT_FORMATS, OrganizationsExporter
 from .filters import (
     EmailFilterForm,
     ExhibitorFilterForm,
@@ -625,18 +625,22 @@ class ExhibitorListView(EventPermissionRequiredMixin, FilteredListMixin, ListVie
                 request.event.organizer, request.event, "can_change_event_settings", request=request
             ):
                 raise PermissionDenied()
-            return self.download_csv()
+            return self.download()
         return super().get(request, *args, **kwargs)
 
-    def download_csv(self):
-        """Everything stored about the listed organizations: the selected ones, or all that match."""
+    def download(self):
+        export_format = self.request.GET.get("_format", EXPORT_FORMAT_XLSX)
+        if export_format not in EXPORT_FORMATS:
+            return HttpResponseBadRequest(_("Unsupported export format."))
         queryset = self.get_queryset()
         selected_pks = self.request.GET.getlist("pk")
         if selected_pks:
             queryset = queryset.filter(pk__in=selected_pks)
-        content = build_organizations_csv(self.request, queryset)
-        filename = organizations_csv_filename(self.request.event, self.organization_type)
-        response = HttpResponse(content.encode("utf-8"), content_type="text/csv; charset=utf-8")
+        exporter = OrganizationsExporter(self.request, queryset, self.organization_type)
+        filename, content_type, payload = exporter.render({"_format": export_format})
+        if content_type == "text/csv":
+            content_type += "; charset=utf-8"
+        response = HttpResponse(payload, content_type=content_type)
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         response["Cache-Control"] = "no-store"
         return response

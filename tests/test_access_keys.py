@@ -17,7 +17,7 @@ class _User:
 
 
 def _download(event, organization_type=None, allowed=True):
-    request = RequestFactory().get("/", {"download": "yes"})
+    request = RequestFactory().get("/", {"download": "yes", "_format": "default"})
     request.event = event
     request.user = _User(allowed=allowed)
     view = ExhibitorListView(organization_type=organization_type)

@@ -4,6 +4,7 @@ import itertools
 from datetime import timedelta
 from decimal import Decimal
 
+import openpyxl
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
@@ -35,7 +36,6 @@ OLD_COLUMNS = ["Name", "Booth ID", "Booth name", "Email", "Access key"]
 
 @pytest.fixture(autouse=True)
 def _organizer_pages(settings):
-    """Render the organizer pages the way the other organizer list tests do."""
     settings.DEBUG = True
     settings.COMPRESS_ENABLED = False
     settings.COMPRESS_PRECOMPILERS = ()
@@ -60,16 +60,15 @@ def _client(event, **flags):
     return client
 
 
-def _download(client, event, query="", name="exhibitors"):
+def _download(client, event, query="", name="exhibitors", export_format="default"):
     url = reverse(f"plugins:exhibition:{name}", kwargs={"organizer": event.organizer.slug, "event": event.slug})
-    return client.get(url + "?download=yes" + query)
+    return client.get(url + f"?download=yes&_format={export_format}" + query)
 
 
 def _rows(response):
     assert response.status_code == 200
-    content = response.content.decode("utf-8")
-    assert content.startswith("\ufeff")
-    rows = list(csv.reader(io.StringIO(content.lstrip("\ufeff"))))
+    assert response["Content-Type"] == "text/csv; charset=utf-8"
+    rows = list(csv.reader(io.StringIO(response.content.decode("utf-8"))))
     header, *body = rows
     return [dict(zip(header, row)) for row in body], header
 
@@ -267,7 +266,6 @@ def test_file_name_has_the_event_and_the_date(event):
     response = _download(client, event)
     after = now().astimezone(event.tz).date()
 
-    # Either date is right if the request ran across midnight in the event's time zone.
     names = {f'attachment; filename="{event.slug}-exhibitors-{day.isoformat()}.csv"' for day in (before, after)}
     assert response["Content-Disposition"] in names
 
@@ -307,6 +305,7 @@ def test_list_offers_download_exhibitors_instead_of_keys(event):
     html = client.get(url).content.decode()
 
     assert "Download exhibitors" in html
+    assert "Excel (.xlsx)" in html
     assert "Download exhibitor keys" not in html
 
 
@@ -358,7 +357,34 @@ def test_answers_are_exported_in_the_event_default_language(event):
     rows, _header = _rows(_download(client, event))
     values = list(rows[0].values())
 
-    # The organizer browses in English, but the file follows the event's default language.
     assert rows[0]["Strom"] == "Ja"
     assert "Nein" in values
     assert "Yes" not in values and "No" not in values
+
+
+@pytest.mark.django_db
+def test_excel_download_has_the_same_rows(event):
+    with scopes_disabled():
+        acme = _organization(event, "Acme", booth_id="A1", description={"en": "=1+1"})
+    response = _download(_client(event), event, export_format="xlsx")
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert response["Content-Disposition"].endswith('.xlsx"')
+    sheet = openpyxl.load_workbook(io.BytesIO(response.content)).active
+    header, row = ([cell.value for cell in line] for line in sheet.iter_rows())
+    values = dict(zip(header, row))
+    assert sheet.title == "Exhibitors"
+    assert values["Name"] == "Acme"
+    assert values["Access key"] == acme.key
+    assert values["Description"] == "'=1+1"
+    assert values["Leads scanned"] == 0
+
+
+@pytest.mark.django_db
+def test_download_defaults_to_excel_and_rejects_unknown_formats(event):
+    client = _client(event)
+    url = reverse("plugins:exhibition:exhibitors", kwargs={"organizer": event.organizer.slug, "event": event.slug})
+
+    assert client.get(url + "?download=yes")["Content-Disposition"].endswith('.xlsx"')
+    assert client.get(url + "?download=yes&_format=pdf").status_code == 400
