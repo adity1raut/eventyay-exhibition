@@ -468,7 +468,15 @@ def test_self_edit_form_leaves_out_organizer_only_fields(event):
 
         form = ExhibitorSelfEditForm(instance=exhibitor, event=event)
 
-        for name in ("email", "published", "is_sponsor", "is_exhibitor", "allow_voucher_access", "booth_id", "comment"):
+        for name in (
+            "email",
+            "published",
+            "is_sponsor",
+            "is_exhibitor",
+            "allow_voucher_access",
+            "booth_number",
+            "comment",
+        ):
             assert name not in form.fields
 
 
@@ -480,7 +488,7 @@ def test_self_edit_saves_content_without_touching_organizer_settings(event):
             event,
             is_sponsor=True,
             is_exhibitor=False,
-            booth_id="B-7",
+            booth_number="B-7",
             logo="exhibitors/logos/Booth Co/logo.png",
             banner="exhibitors/banners/Booth Co/banner.png",
         )
@@ -498,7 +506,7 @@ def test_self_edit_saves_content_without_touching_organizer_settings(event):
         assert exhibitor.email == "booth@example.com"
         assert exhibitor.is_sponsor and not exhibitor.is_exhibitor
         assert exhibitor.allow_voucher_access
-        assert exhibitor.booth_id == "B-7"
+        assert exhibitor.booth_number == "B-7"
 
 
 @pytest.mark.django_db
